@@ -227,6 +227,34 @@ mp.register_script_message('pan', function(axis, d, d2)
         cmd('no-osd', 'add', 'video-pan-' .. axis, d)
     end
 end)
+-- перемотка стрелками: seek <секунды>, с надписью «Вперёд 5 сек · 00:01:23 / 00:20:00».
+-- При зажатой стрелке mpv складывает быстрые перемотки, поэтому считаем от прошлой цели,
+-- а не от time-pos, который ещё не успел обновиться
+local seek_target, seek_time, seek_label
+local function seek_osd(pos)
+    local dur = mp.get_property_number('duration')
+    mp.osd_message(seek_label .. ' · ' .. fmt_time(pos) .. (dur and ' / ' .. fmt_time(dur) or ''))
+end
+mp.register_script_message('seek', function(d)
+    d = tonumber(d)
+    if not d or st.idle or too_soon('seek', 10) then return end
+    local dur = mp.get_property_number('duration')
+    local base = seek_time and mp.get_time() - seek_time < 0.5 and seek_target or mp.get_property_number('time-pos', 0)
+    seek_target = math.max(0, dur and math.min(base + d, dur) or base + d)
+    seek_time = mp.get_time()
+    cmd('no-osd', 'seek', tostring(d))
+    local a = math.abs(d)
+    seek_label = (d < 0 and 'Назад ' or 'Вперёд ') .. (a >= 60 and a % 60 == 0 and (a / 60) .. ' мин' or a .. ' сек')
+    seek_osd(seek_target)
+end)
+-- mpv перематывает к ближайшему ключевому кадру: когда перемотка закончилась,
+-- показываем время, где видео встало на самом деле
+mp.register_event('playback-restart', function()
+    if seek_time and mp.get_time() - seek_time < 1.5 then
+        seek_osd(mp.get_property_number('time-pos', 0))
+    end
+end)
+
 mp.register_script_message('view-reset', function()
     view_reset()
     mp.osd_message('Масштаб: 100%')
@@ -444,10 +472,9 @@ local function draw_topbar(a)
     tbtn('tb-min', 'remove', 18)
     tbtn('tb-max', 'crop_square', 16)
     tbtn('tb-close', 'close', 20, bgr('E81123'))
-    local title = st.title or ''
-    if title ~= '' then
-        text(a, 14 * s, th / 2, esc(fit(title, w - 4 * bw - 28 * s, 13 * s)), 13 * s, C.text, 4)
-    end
+    -- как в заголовке окна (title в mpv.conf): «Фильм.avi - GomLike»
+    local title = (st.title and st.title ~= '' and st.title .. ' - ' or '') .. 'GomLike'
+    text(a, 14 * s, th / 2, esc(fit(title, w - 4 * bw - 28 * s, 13 * s)), 13 * s, C.text, 4)
 end
 
 local function render()
