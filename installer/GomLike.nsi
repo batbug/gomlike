@@ -126,6 +126,9 @@ Section "${APP} (обязательно)" SecMain
     File "gomlike.ico"
     File /r "payload\portable_config"
     File "payload\README.txt"
+    ; лицензии: GomLike (MIT) и mpv (GPLv2+); откуда взят mpv — в mpv-source.txt
+    File "/oname=LICENSE.txt" "payload\LICENSE"
+    File /r "licenses"
 
 !ifdef OFFLINE
     ; mpv и список его файлов (gomlike-files.txt) для удаления
@@ -245,9 +248,12 @@ Section "Uninstall"
         FileClose $1
     ${EndIf}
     Delete "$INSTDIR\gomlike-files.txt"
+    Delete "$INSTDIR\mpv-source.txt"
     RMDir /r "$INSTDIR\portable_config"
+    RMDir /r "$INSTDIR\licenses"
     Delete "$INSTDIR\gomlike.ico"
     Delete "$INSTDIR\README.txt"
+    Delete "$INSTDIR\LICENSE.txt"
     Delete "$INSTDIR\uninstall.exe"
     RMDir "$INSTDIR"
 SectionEnd

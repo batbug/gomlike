@@ -35,6 +35,15 @@ try {
     $items = Get-ChildItem $exe.DirectoryName | Where-Object { $skip -notcontains $_.Name }
     foreach ($i in $items) { Copy-Item $i.FullName -Destination $Dest -Recurse -Force }
     $items | ForEach-Object { $_.Name } | Set-Content -Path (Join-Path $Dest 'gomlike-files.txt') -Encoding ASCII
+
+    # Where this exact mpv build comes from (mpv is GPLv2+, see licenses\mpv)
+    $src = @(
+        "mpv build: $($asset.name)",
+        "Build release: https://github.com/shinchiro/mpv-winbuild-cmake/releases/tag/$($rel.tag_name)",
+        "Build scripts: https://github.com/shinchiro/mpv-winbuild-cmake"
+    )
+    if ($asset.name -match '-git-([0-9a-f]+)\.7z$') { $src += "mpv source: https://github.com/mpv-player/mpv/tree/$($Matches[1])" }
+    $src | Set-Content -Path (Join-Path $Dest 'mpv-source.txt') -Encoding ASCII
     if (-not (Test-Path (Join-Path $Dest 'mpv.exe'))) { throw "mpv.exe was not copied" }
     Write-Output "mpv installed."
     exit 0

@@ -9,11 +9,12 @@
   - `input.conf` — горячие клавиши (дублированы для русской раскладки)
   - `scripts/classicbar.lua` — панель управления, плейлист, клик/двойной клик, окно выбора файла Windows
   - `script-opts/classicbar.conf` — цвета, высота панели, автоскрытие
-  - `scripts/uosc/`, `fonts/` — [uosc](https://github.com/tomasklaen/uosc) (сторонний проект, используется только для меню по правому клику; лицензия — в его репозитории)
+  - `scripts/uosc/`, `fonts/` — [uosc](https://github.com/tomasklaen/uosc) 5.13.0 (сторонний проект, используется только для меню по правому клику; LGPL-2.1, `scripts/uosc/LICENSE.LGPL`)
 - `player/README.txt` — инструкция для пользователя (кладётся в папку установки)
 - `installer/` — установщик на NSIS:
   - `GomLike.nsi` — установка в выбранную папку для текущего пользователя, ярлыки, ассоциации файлов, удаление
-  - `getmpv.ps1` — скачивает свежую сборку mpv ([shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake)): во время установки или при сборке офлайн-версии
+  - `getmpv.ps1` — скачивает свежую сборку mpv ([shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake)): во время установки или при сборке офлайн-версии; рядом с mpv кладёт `mpv-source.txt` с точной версией и ссылками на исходники
+  - `licenses/mpv/` — лицензия mpv (GPLv2+), ставится вместе с плеером
 - `tools/build.ps1` (Windows), `tools/build.sh` (Linux) — сборка установщиков
 - `tools/vtscan.ps1` — проверка собранных установщиков на VirusTotal
 
@@ -50,3 +51,7 @@ powershell -ExecutionPolicy Bypass -File tools\vtscan.ps1
 ```
 
 Без параметров проверяет оба собранных установщика, занимает несколько минут. Неподписанные установщики NSIS обычно ловят несколько эвристических срабатываний («Malicious», «Unsafe», «PossibleThreat»), это ожидаемо.
+
+## Лицензия
+
+Файлы GomLike — [MIT](LICENSE). Сторонние части со своими лицензиями: [uosc](https://github.com/tomasklaen/uosc) — LGPL-2.1, [mpv](https://mpv.io) — GPLv2+ (не хранится в репозитории: скачивается установщиком или при сборке офлайн-версии).

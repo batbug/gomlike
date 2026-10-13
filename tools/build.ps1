@@ -28,7 +28,7 @@ Push-Location $installer
 try {
     if (Test-Path $payload) { Remove-Item $payload -Recurse -Force }
     New-Item -ItemType Directory -Path $payload | Out-Null
-    Copy-Item '..\player\portable_config', '..\player\README.txt' -Destination $payload -Recurse
+    Copy-Item '..\player\portable_config', '..\player\README.txt', '..\LICENSE' -Destination $payload -Recurse
 
     if ($Test) { Build @('TEST') 'test-setup.exe'; return }
 

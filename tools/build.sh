@@ -7,7 +7,7 @@ set -e
 cd "$(dirname "$0")/../installer"
 rm -rf payload && mkdir payload
 trap 'rm -rf payload mpv.new' EXIT
-cp -r ../player/portable_config ../player/README.txt payload/
+cp -r ../player/portable_config ../player/README.txt ../LICENSE payload/
 
 makensis -V2 GomLike.nsi
 echo "Готово: installer/GomLike-Setup.exe"
@@ -30,6 +30,13 @@ if [ "$1" = "--update-mpv" ] || [ ! -f mpv/mpv.exe ]; then
             *) cp -r "$f" mpv.new/out/; basename "$f" >> mpv.new/out/gomlike-files.txt ;;
         esac
     done
+    # откуда взята эта сборка mpv (mpv под GPLv2+, см. licenses/mpv)
+    tag=$(echo "$url" | sed 's|.*/download/\([^/]*\)/.*|\1|')
+    commit=$(echo "$url" | sed 's|.*-git-\([0-9a-f]*\)\.7z$|\1|')
+    printf '%s\r\n' "mpv build: $(basename "$url")" \
+        "Build release: https://github.com/shinchiro/mpv-winbuild-cmake/releases/tag/$tag" \
+        "Build scripts: https://github.com/shinchiro/mpv-winbuild-cmake" \
+        "mpv source: https://github.com/mpv-player/mpv/tree/$commit" > mpv.new/out/mpv-source.txt
     rm -rf mpv && mv mpv.new/out mpv
 fi
 
