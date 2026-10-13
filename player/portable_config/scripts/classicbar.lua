@@ -153,8 +153,70 @@ local tips = {
     next = 'Следующий файл (PgDn)', open = 'Открыть файл (Ctrl+O)', subs = 'Субтитры (Alt+S)',
     audio = 'Звуковая дорожка (Alt+A)', list = 'Плейлист (колесико мыши, F8)', menu = 'Меню',
     mute = 'Без звука (M)', fullscreen = 'Полный экран (Enter)', speed = 'Сбросить скорость (Z)',
-    time = 'Показать оставшееся время',
+    time = 'Показать оставшееся время', image = 'Настройки изображения (F7)',
+    ['eqrot-l'] = 'Повернуть влево', ['eqrot-r'] = 'Повернуть вправо',
+    ['eqflip-h'] = 'Отразить по горизонтали', ['eqflip-v'] = 'Отразить по вертикали',
 }
+local function tip_for(id)
+    if id:find('^eqval:') then return 'Сбросить' end
+    return tips[id]
+end
+
+-- ---------- изображение: цвет, поворот, отражение, масштаб ----------
+local EQ = {
+    {'brightness', 'Яркость'}, {'contrast', 'Контраст'}, {'saturation', 'Насыщенность'},
+    {'gamma', 'Гамма'}, {'hue', 'Оттенок'},
+}
+local EQ_NAMES = {}
+for _, e in ipairs(EQ) do EQ_NAMES[e[1]] = e[2] end
+st.eq = {}
+
+local function signed(v)
+    v = math.floor(v + 0.5)
+    return v > 0 and '+' .. v or tostring(v)
+end
+local function zoom_pct() return math.floor(2 ^ (st.zoom or 0) * 100 + 0.5) .. '%' end
+
+local function view_reset()
+    mp.set_property_number('video-zoom', 0)
+    mp.set_property_number('video-pan-x', 0)
+    mp.set_property_number('video-pan-y', 0)
+end
+
+-- отражение — шейдерами на видеокарте: фильтры vf hflip/vflip не работают с аппаратным декодированием
+local FLIP = {h = '~~/shaders/hflip.glsl', v = '~~/shaders/vflip.glsl'}
+
+local function image_reset()
+    for _, e in ipairs(EQ) do mp.set_property_number(e[1], 0) end
+    mp.set_property_number('video-rotate', 0)
+    if st.hflip then cmd('change-list', 'glsl-shaders', 'remove', FLIP.h) end
+    if st.vflip then cmd('change-list', 'glsl-shaders', 'remove', FLIP.v) end
+    view_reset()
+end
+
+-- горячие клавиши из input.conf: script-message-to classicbar adjust|zoom|pan|view-reset
+mp.register_script_message('adjust', function(prop, d)
+    if not EQ_NAMES[prop] then return end
+    cmd('no-osd', 'add', prop, d)
+    mp.osd_message(EQ_NAMES[prop] .. ': ' .. signed(mp.get_property_number(prop, 0)))
+end)
+mp.register_script_message('zoom', function(d)
+    cmd('no-osd', 'add', 'video-zoom', d)
+    mp.osd_message('Масштаб: ' .. zoom_pct())
+end)
+mp.register_script_message('pan', function(axis, d)
+    cmd('no-osd', 'add', 'video-pan-' .. axis, d)
+end)
+mp.register_script_message('view-reset', function()
+    view_reset()
+    mp.osd_message('Масштаб: 100%')
+end)
+
+actions['eqrot-l'] = function() mp.set_property_number('video-rotate', ((st.rotate or 0) + 270) % 360) end
+actions['eqrot-r'] = function() mp.set_property_number('video-rotate', ((st.rotate or 0) + 90) % 360) end
+actions['eqflip-h'] = function() cmd('change-list', 'glsl-shaders', 'toggle', FLIP.h) end
+actions['eqflip-v'] = function() cmd('change-list', 'glsl-shaders', 'toggle', FLIP.v) end
+actions.eqreset = image_reset
 
 -- ---------- раскладка и отрисовка ----------
 local function panel_shown() return not st.fs or st.visible end
@@ -239,6 +301,89 @@ local function draw_playlist(a)
     end
 end
 
+-- ---------- панель изображения (F7) ----------
+local eq_box, eq_tracks
+local function draw_eq(a)
+    eq_box, eq_tracks = nil, {}
+    if not st.eq_open then return end
+    local s = st.scale
+    local hh, rh, bs = 38 * s, 32 * s, 32 * s
+    local x1, y1 = 12 * s, 12 * s
+    local x2 = x1 + math.min(340 * s, st.w - 24 * s)
+    local y2 = y1 + hh + 6 * s + #EQ * rh + 8 * s + 22 * s + 40 * s + 22 * s + 8 * s + 40 * s
+    eq_box = {x1 = x1, y1 = y1, x2 = x2, y2 = y2}
+    rrect(a, x1, y1, x2, y2, 6 * s, C.panel, '10')
+
+    -- заголовок
+    text(a, x1 + 14 * s, y1 + hh / 2, 'Изображение', 15 * s, C.text, 4)
+    local cx = x2 - 8 * s - 28 * s
+    if st.hovered == 'eqclose' then rrect(a, cx, y1 + 5 * s, cx + 28 * s, y1 + hh - 5 * s, 4 * s, C.hover) end
+    icon(a, cx + 14 * s, y1 + hh / 2, 'close', 18 * s, st.hovered == 'eqclose' and C.icon_hi or C.icon)
+    elements[#elements + 1] = {id = 'eqclose', x1 = cx, y1 = y1 + 5 * s, x2 = cx + 28 * s, y2 = y1 + hh - 5 * s}
+    rect(a, x1, y1 + hh, x2, y1 + hh + 1 * s, C.sep)
+
+    -- ползунки цвета: от -100 до 100, ноль посередине
+    local y = y1 + hh + 6 * s
+    local tx1, tx2 = x1 + 124 * s, x2 - 52 * s
+    local mid = (tx1 + tx2) / 2
+    for _, e in ipairs(EQ) do
+        local prop, label = e[1], e[2]
+        local v = st.eq[prop] or 0
+        local cy = y + rh / 2
+        local active = st.hovered == 'eq:' .. prop or st.dragging == 'eq:' .. prop
+        text(a, x1 + 14 * s, cy, label, 13 * s, C.text, 4)
+        rrect(a, tx1, cy - 2 * s, tx2, cy + 2 * s, 2 * s, C.track)
+        rect(a, mid - 0.5 * s, cy - 5 * s, mid + 0.5 * s, cy + 5 * s, C.dim)
+        local px = tx1 + (tx2 - tx1) * (math.max(-100, math.min(v, 100)) + 100) / 200
+        if math.abs(px - mid) > 1 then
+            rrect(a, math.min(px, mid), cy - 2 * s, math.max(px, mid), cy + 2 * s, 2 * s, C.accent)
+        end
+        circle(a, px, cy, (active and 7 or 6) * s, C.icon_hi)
+        elements[#elements + 1] = {id = 'eq:' .. prop, x1 = tx1 - 8 * s, y1 = y, x2 = tx2 + 8 * s, y2 = y + rh}
+        eq_tracks[prop] = {x1 = tx1, x2 = tx2}
+        local vid = 'eqval:' .. prop
+        if st.hovered == vid and math.abs(v) >= 0.5 then
+            rrect(a, x2 - 46 * s, cy - 11 * s, x2 - 8 * s, cy + 11 * s, 4 * s, C.hover)
+        end
+        text(a, x2 - 14 * s, cy, signed(v), 13 * s, math.abs(v) >= 0.5 and C.accent or C.dim, 6)
+        elements[#elements + 1] = {id = vid, x1 = x2 - 46 * s, y1 = cy - 11 * s, x2 = x2 - 8 * s, y2 = cy + 11 * s}
+        y = y + rh
+    end
+
+    -- поворот и отражение
+    y = y + 8 * s
+    text(a, x1 + 14 * s, y + 11 * s, 'Поворот и отражение', 12 * s, C.dim, 4)
+    y = y + 22 * s
+    local bx = x1 + 10 * s
+    local function ibtn(id, name, on)
+        local cy = y + 20 * s
+        if st.hovered == id then rrect(a, bx, cy - bs / 2, bx + bs, cy + bs / 2, 4 * s, C.hover) end
+        icon(a, bx + bs / 2, cy, name, 22 * s, on and C.accent or (st.hovered == id and C.icon_hi or C.icon))
+        elements[#elements + 1] = {id = id, x1 = bx, y1 = cy - bs / 2, x2 = bx + bs, y2 = cy + bs / 2}
+        bx = bx + bs + 4 * s
+    end
+    ibtn('eqrot-l', 'rotate_left')
+    ibtn('eqrot-r', 'rotate_right')
+    ibtn('eqflip-h', 'swap_horiz', st.hflip)
+    ibtn('eqflip-v', 'swap_vert', st.vflip)
+    local state = {}
+    if (st.rotate or 0) ~= 0 then state[#state + 1] = st.rotate .. '°' end
+    if (st.zoom or 0) ~= 0 then state[#state + 1] = 'масштаб ' .. zoom_pct() end
+    if #state > 0 then text(a, x2 - 14 * s, y + 20 * s, table.concat(state, ', '), 13 * s, C.accent, 6) end
+    y = y + 40 * s
+    text(a, x1 + 14 * s, y + 11 * s, 'Масштаб и сдвиг: нампад + − 8 4 6 2, сброс 5', 12 * s, C.dim, 4)
+    y = y + 22 * s + 8 * s
+    rect(a, x1, y, x2, y + 1 * s, C.sep)
+
+    -- сброс всего
+    local label = 'Сбросить всё'
+    local lw = text_w(label, 13 * s) + 20 * s
+    local cy = y + 20 * s
+    if st.hovered == 'eqreset' then rrect(a, x1 + 8 * s, cy - 14 * s, x1 + 8 * s + lw, cy + 14 * s, 4 * s, C.hover) end
+    text(a, x1 + 8 * s + lw / 2, cy, label, 13 * s, st.hovered == 'eqreset' and C.icon_hi or C.text, 5)
+    elements[#elements + 1] = {id = 'eqreset', x1 = x1 + 8 * s, y1 = cy - 14 * s, x2 = x1 + 8 * s + lw, y2 = cy + 14 * s}
+end
+
 local function render()
     dirty = false
     local w, h, s = st.w, st.h, st.scale
@@ -254,6 +399,7 @@ local function render()
     end
 
     if not panel_shown() then
+        draw_eq(a)
         draw_playlist(a)
         ov.res_x, ov.res_y, ov.data = w, h, table.concat(a, '\n')
         ov:update()
@@ -323,7 +469,7 @@ local function render()
     local ts = 14 * s
     local time_w = text_w(time_str, ts) + 20 * s
     local free = w - left_end - need_right - time_w
-    local show_extra = free > 3 * bs
+    local show_extra = free > 4 * bs
 
     local rx = w - 10 * s
     rx = rx - bs; button('fullscreen', rx, st.fs and 'fullscreen_exit' or 'fullscreen', 24)
@@ -343,6 +489,7 @@ local function render()
     if show_extra then
         rx = rx - bs; button('menu', rx, 'tune')
         rx = rx - bs; button('list', rx, 'queue_music')
+        rx = rx - bs; button('image', rx, 'brightness_6', 20, st.eq_open and C.accent or nil)
     end
     rx = rx - bs; button('audio', rx, 'audiotrack', 20)
     rx = rx - bs; button('subs', rx, 'subtitles')
@@ -362,23 +509,29 @@ local function render()
         elements[#elements + 1] = {id = 'time', x1 = x, y1 = cy - bs / 2, x2 = x + time_w - 10 * s, y2 = cy + bs / 2}
     end
 
+    draw_eq(a)
     draw_playlist(a)
 
-    -- подсказки
-    local tip, tx
+    -- подсказки: над панелью, а у кнопок панели изображения — под кнопкой
+    local tip, tx, ty2
     if (st.hovered == 'seek' or st.dragging == 'seek') and dur > 0 and seek_area then
         local fr = math.max(0, math.min((st.mx - sx1) / (sx2 - sx1), 1))
         tip, tx = fmt_time(fr * dur), st.mx
-    elseif st.hovered and tips[st.hovered] and not st.dragging and not st.menu and not st.hovered:find('^pl') then
-        tip = tips[st.hovered]
+    elseif st.hovered and tip_for(st.hovered) and not st.dragging and not st.menu and not st.hovered:find('^pl') then
+        tip = tip_for(st.hovered)
         if st.hovered == 'time' and st.remaining then tip = 'Показать общее время' end
-        for _, e in ipairs(elements) do if e.id == st.hovered then tx = (e.x1 + e.x2) / 2 end end
+        for _, e in ipairs(elements) do
+            if e.id == st.hovered then
+                tx = (e.x1 + e.x2) / 2
+                if e.id:find('^eq') then ty2 = e.y2 + 28 * s end
+            end
+        end
     end
     if tip and tx then
         local fs = 13 * s
         local tw = text_w(tip, fs) + 16 * s
         local tx1 = math.max(4 * s, math.min(tx - tw / 2, w - tw - 4 * s))
-        local ty2 = top - 6 * s
+        ty2 = ty2 or top - 6 * s
         rrect(a, tx1, ty2 - 24 * s, tx1 + tw, ty2, 4 * s, C.tip, '30')
         text(a, tx1 + tw / 2, ty2 - 12 * s, tip, fs, C.text, 5)
     end
@@ -403,6 +556,14 @@ local function seek_to(x, exact)
     cmd('seek', tostring(fr * 100), exact and 'absolute-percent+exact' or 'absolute-percent+keyframes')
 end
 
+local function eq_to(id, x)
+    local prop = id:sub(4)
+    local tr = eq_tracks and eq_tracks[prop]
+    if not tr then return end
+    local fr = math.max(0, math.min((x - tr.x1) / (tr.x2 - tr.x1), 1))
+    mp.set_property_number(prop, math.floor(fr * 200 - 100 + 0.5))
+end
+
 local function vol_to(x)
     local fr = math.max(0, math.min((x - vol_area.tx1) / (vol_area.tx2 - vol_area.tx1), 1))
     mp.set_property_number('volume', math.floor(fr * 100 + 0.5))
@@ -414,6 +575,7 @@ local function on_left(t)
         local id = hit(st.mx, st.my)
         if id == 'seek' then st.dragging = 'seek'; seek_to(st.mx, false)
         elseif id == 'vol' then st.dragging = 'vol'; vol_to(st.mx)
+        elseif id and id:find('^eq:') then st.dragging = id; eq_to(id, st.mx)
         else st.pressed = id end
         dirty = true
     elseif t.event == 'up' then
@@ -425,6 +587,8 @@ local function on_left(t)
         if id and hit(st.mx, st.my) == id then
             if id:sub(1, 3) == 'pl:' then
                 cmd('playlist-play-index', tostring(tonumber(id:sub(4)) - 1))
+            elseif id:find('^eqval:') then
+                mp.set_property_number(id:sub(7), 0)
             elseif actions[id] then
                 actions[id]()
             end
@@ -436,12 +600,17 @@ end
 local function over_ui(x, y)
     if st.idle and hit(x, y) == 'open' then return true end
     if st.pl_open and in_box(pl_box, x, y) then return true end
+    if st.eq_open and in_box(eq_box, x, y) then return true end
     return panel_shown() and y >= panel_top - 2
 end
 
--- колесо: над плейлистом прокручивает список, над панелью меняет громкость
+-- колесо: над плейлистом прокручивает список, над ползунком изображения двигает его,
+-- над панелью меняет громкость
 local function wheel(dir)
-    if st.pl_open and in_box(pl_box, st.mx, st.my) then
+    if st.eq_open and in_box(eq_box, st.mx, st.my) then
+        local id = hit(st.mx, st.my)
+        if id and id:find('^eq:') then cmd('add', id:sub(4), tostring(-dir * 2)) end
+    elseif st.pl_open and in_box(pl_box, st.mx, st.my) then
         st.pl_scroll = (st.pl_scroll or 0) + dir * 3
         dirty = true
     else
@@ -465,6 +634,21 @@ end
 actions.list = toggle_playlist
 actions.plclose = toggle_playlist
 mp.add_key_binding(nil, 'playlist', toggle_playlist)
+
+local function toggle_eq()
+    st.eq_open = not st.eq_open
+    if st.eq_open then
+        mp.add_forced_key_binding('ESC', 'classicbar-eqesc', toggle_eq)
+        if st.fs then st.visible = true end
+    else
+        mp.remove_key_binding('classicbar-eqesc')
+        st.hovered = nil
+    end
+    dirty = true
+end
+actions.image = toggle_eq
+actions.eqclose = toggle_eq
+mp.add_key_binding(nil, 'image', toggle_eq)
 
 local function set_bindings(on)
     if on == st.bound then return end
@@ -495,14 +679,15 @@ mp.observe_property('mouse-pos', 'native', function(_, m)
     st.mx, st.my, st.inside = m.x, m.y, m.hover
     if moved then show_panel() end
     if st.dragging == 'seek' then seek_to(st.mx, false)
-    elseif st.dragging == 'vol' then vol_to(st.mx) end
+    elseif st.dragging == 'vol' then vol_to(st.mx)
+    elseif st.dragging and st.dragging:find('^eq:') then eq_to(st.dragging, st.mx) end
     local id = m.hover and over_ui(m.x, m.y) and hit(m.x, m.y) or nil
     if id ~= st.hovered then st.hovered = id; dirty = true end
     set_bindings(st.dragging ~= nil or (m.hover and over_ui(m.x, m.y)))
 end)
 
 hide_timer = mp.add_timeout(o.hide_timeout, function()
-    if st.fs and not st.dragging and not st.pl_open and not (st.inside and st.my >= panel_top) then
+    if st.fs and not st.dragging and not st.pl_open and not st.eq_open and not (st.inside and st.my >= panel_top) then
         st.visible = false
         st.hovered = nil
         set_bindings(false)
@@ -534,6 +719,17 @@ watch('osd-dimensions', nil, function(v)
 end)
 watch('user-data/uosc/menu/type', 'menu')
 watch('playlist', 'playlist', function(v) st.playlist = v or {} end)
+for _, e in ipairs(EQ) do
+    watch(e[1], nil, function(v) st.eq[e[1]] = v or 0 end)
+end
+watch('video-rotate', 'rotate', function(v) st.rotate = tonumber(v) or 0 end)
+watch('video-zoom', 'zoom')
+watch('glsl-shaders', nil, function(v)
+    st.hflip, st.vflip = false, false
+    for _, p in ipairs(v or {}) do
+        if p == FLIP.h then st.hflip = true elseif p == FLIP.v then st.vflip = true end
+    end
+end)
 watch('fullscreen', 'fs', function(v)
     st.fs = v and true or false
     st.visible = true
