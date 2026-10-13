@@ -175,7 +175,7 @@ local function signed(v)
     v = math.floor(v + 0.5)
     return v > 0 and '+' .. v or tostring(v)
 end
-local function zoom_pct() return math.floor(2 ^ (st.zoom or 0) * 100 + 0.5) .. '%' end
+local function zoom_pct(z) return math.floor(2 ^ (z or st.zoom or 0) * 100 + 0.5) .. '%' end
 
 local function view_reset()
     mp.set_property_number('video-zoom', 0)
@@ -202,7 +202,7 @@ mp.register_script_message('adjust', function(prop, d)
 end)
 mp.register_script_message('zoom', function(d)
     cmd('no-osd', 'add', 'video-zoom', d)
-    mp.osd_message('Масштаб: ' .. zoom_pct())
+    mp.osd_message('Масштаб: ' .. zoom_pct(mp.get_property_number('video-zoom', 0)))
 end)
 mp.register_script_message('pan', function(axis, d)
     cmd('no-osd', 'add', 'video-pan-' .. axis, d)
@@ -306,60 +306,72 @@ local eq_box, eq_tracks
 local function draw_eq(a)
     eq_box, eq_tracks = nil, {}
     if not st.eq_open then return end
+    -- невысокая широкая полоса над панелью управления, как в GOM:
+    -- слева ползунки в две колонки, справа поворот, отражение и сброс
     local s = st.scale
-    local hh, rh, bs = 38 * s, 32 * s, 32 * s
-    local x1, y1 = 12 * s, 12 * s
-    local x2 = x1 + math.min(340 * s, st.w - 24 * s)
-    local y2 = y1 + hh + 6 * s + #EQ * rh + 8 * s + 22 * s + 40 * s + 22 * s + 8 * s + 40 * s
+    local hh, rh, bs = 28 * s, 26 * s, 28 * s
+    -- если открыт плейлист, полоса помещается слева от него
+    local room = st.pl_open and st.w - math.min(420 * s, st.w * 0.45) or st.w
+    local bw = math.min(800 * s, room - 24 * s)
+    local x1 = (room - bw) / 2
+    local x2 = x1 + bw
+    local rw = 4 * bs + 3 * 4 * s + 24 * s
+    local rx1 = x2 - rw
+    -- ползунки в две колонки, а в узком окне — в одну
+    local cols = (rx1 - x1) / 2 - 154 * s >= 80 * s and 2 or 1
+    local rows = math.ceil(#EQ / cols)
+    local cw = (rx1 - x1) / cols
+    local y2 = (panel_shown() and panel_top or st.h) - 8 * s
+    local y1 = y2 - (hh + rows * rh + 12 * s)
     eq_box = {x1 = x1, y1 = y1, x2 = x2, y2 = y2}
     rrect(a, x1, y1, x2, y2, 6 * s, C.panel, '10')
 
     -- заголовок
-    text(a, x1 + 14 * s, y1 + hh / 2, 'Изображение', 15 * s, C.text, 4)
-    local cx = x2 - 8 * s - 28 * s
-    if st.hovered == 'eqclose' then rrect(a, cx, y1 + 5 * s, cx + 28 * s, y1 + hh - 5 * s, 4 * s, C.hover) end
-    icon(a, cx + 14 * s, y1 + hh / 2, 'close', 18 * s, st.hovered == 'eqclose' and C.icon_hi or C.icon)
-    elements[#elements + 1] = {id = 'eqclose', x1 = cx, y1 = y1 + 5 * s, x2 = cx + 28 * s, y2 = y1 + hh - 5 * s}
+    text(a, x1 + 12 * s, y1 + hh / 2, 'Изображение', 13 * s, C.text, 4)
+    local cx = x2 - 6 * s - 24 * s
+    if st.hovered == 'eqclose' then rrect(a, cx, y1 + 3 * s, cx + 24 * s, y1 + hh - 3 * s, 4 * s, C.hover) end
+    icon(a, cx + 12 * s, y1 + hh / 2, 'close', 16 * s, st.hovered == 'eqclose' and C.icon_hi or C.icon)
+    elements[#elements + 1] = {id = 'eqclose', x1 = cx, y1 = y1 + 3 * s, x2 = cx + 24 * s, y2 = y1 + hh - 3 * s}
     rect(a, x1, y1 + hh, x2, y1 + hh + 1 * s, C.sep)
 
+    local top = y1 + hh + 6 * s
+    rect(a, rx1, top, rx1 + 1 * s, y2 - 6 * s, C.sep)
+
     -- ползунки цвета: от -100 до 100, ноль посередине
-    local y = y1 + hh + 6 * s
-    local tx1, tx2 = x1 + 124 * s, x2 - 52 * s
-    local mid = (tx1 + tx2) / 2
-    for _, e in ipairs(EQ) do
+    for i, e in ipairs(EQ) do
         local prop, label = e[1], e[2]
         local v = st.eq[prop] or 0
-        local cy = y + rh / 2
+        local cx1 = x1 + math.floor((i - 1) / rows) * cw
+        local ry = top + ((i - 1) % rows) * rh
+        local cy = ry + rh / 2
+        local tx1, tx2 = cx1 + 104 * s, cx1 + cw - 50 * s
+        local mid = (tx1 + tx2) / 2
         local active = st.hovered == 'eq:' .. prop or st.dragging == 'eq:' .. prop
-        text(a, x1 + 14 * s, cy, label, 13 * s, C.text, 4)
+        text(a, cx1 + 12 * s, cy, label, 12 * s, C.text, 4)
         rrect(a, tx1, cy - 2 * s, tx2, cy + 2 * s, 2 * s, C.track)
-        rect(a, mid - 0.5 * s, cy - 5 * s, mid + 0.5 * s, cy + 5 * s, C.dim)
+        rect(a, mid - 0.5 * s, cy - 4 * s, mid + 0.5 * s, cy + 4 * s, C.dim)
         local px = tx1 + (tx2 - tx1) * (math.max(-100, math.min(v, 100)) + 100) / 200
         if math.abs(px - mid) > 1 then
             rrect(a, math.min(px, mid), cy - 2 * s, math.max(px, mid), cy + 2 * s, 2 * s, C.accent)
         end
-        circle(a, px, cy, (active and 7 or 6) * s, C.icon_hi)
-        elements[#elements + 1] = {id = 'eq:' .. prop, x1 = tx1 - 8 * s, y1 = y, x2 = tx2 + 8 * s, y2 = y + rh}
+        circle(a, px, cy, (active and 6.5 or 5.5) * s, C.icon_hi)
+        elements[#elements + 1] = {id = 'eq:' .. prop, x1 = tx1 - 8 * s, y1 = ry, x2 = tx2 + 8 * s, y2 = ry + rh}
         eq_tracks[prop] = {x1 = tx1, x2 = tx2}
-        local vid = 'eqval:' .. prop
+        local vid, vx2 = 'eqval:' .. prop, cx1 + cw - 8 * s
         if st.hovered == vid and math.abs(v) >= 0.5 then
-            rrect(a, x2 - 46 * s, cy - 11 * s, x2 - 8 * s, cy + 11 * s, 4 * s, C.hover)
+            rrect(a, vx2 - 38 * s, cy - 10 * s, vx2, cy + 10 * s, 4 * s, C.hover)
         end
-        text(a, x2 - 14 * s, cy, signed(v), 13 * s, math.abs(v) >= 0.5 and C.accent or C.dim, 6)
-        elements[#elements + 1] = {id = vid, x1 = x2 - 46 * s, y1 = cy - 11 * s, x2 = x2 - 8 * s, y2 = cy + 11 * s}
-        y = y + rh
+        text(a, vx2 - 6 * s, cy, signed(v), 12 * s, math.abs(v) >= 0.5 and C.accent or C.dim, 6)
+        elements[#elements + 1] = {id = vid, x1 = vx2 - 38 * s, y1 = cy - 10 * s, x2 = vx2, y2 = cy + 10 * s}
     end
 
-    -- поворот и отражение
-    y = y + 8 * s
-    text(a, x1 + 14 * s, y + 11 * s, 'Поворот и отражение', 12 * s, C.dim, 4)
-    y = y + 22 * s
-    local bx = x1 + 10 * s
+    -- справа: поворот и отражение, состояние, сброс
+    local bx = rx1 + 12 * s
+    local by = top + rh / 2
     local function ibtn(id, name, on)
-        local cy = y + 20 * s
-        if st.hovered == id then rrect(a, bx, cy - bs / 2, bx + bs, cy + bs / 2, 4 * s, C.hover) end
-        icon(a, bx + bs / 2, cy, name, 22 * s, on and C.accent or (st.hovered == id and C.icon_hi or C.icon))
-        elements[#elements + 1] = {id = id, x1 = bx, y1 = cy - bs / 2, x2 = bx + bs, y2 = cy + bs / 2}
+        if st.hovered == id then rrect(a, bx, by - bs / 2, bx + bs, by + bs / 2, 4 * s, C.hover) end
+        icon(a, bx + bs / 2, by, name, 20 * s, on and C.accent or (st.hovered == id and C.icon_hi or C.icon))
+        elements[#elements + 1] = {id = id, x1 = bx, y1 = by - bs / 2, x2 = bx + bs, y2 = by + bs / 2}
         bx = bx + bs + 4 * s
     end
     ibtn('eqrot-l', 'rotate_left')
@@ -369,19 +381,14 @@ local function draw_eq(a)
     local state = {}
     if (st.rotate or 0) ~= 0 then state[#state + 1] = st.rotate .. '°' end
     if (st.zoom or 0) ~= 0 then state[#state + 1] = 'масштаб ' .. zoom_pct() end
-    if #state > 0 then text(a, x2 - 14 * s, y + 20 * s, table.concat(state, ', '), 13 * s, C.accent, 6) end
-    y = y + 40 * s
-    text(a, x1 + 14 * s, y + 11 * s, 'Масштаб и сдвиг: нампад + − 8 4 6 2, сброс 5', 12 * s, C.dim, 4)
-    y = y + 22 * s + 8 * s
-    rect(a, x1, y, x2, y + 1 * s, C.sep)
+    if #state > 0 then text(a, rx1 + 12 * s, top + rh * 1.5, table.concat(state, ', '), 12 * s, C.accent, 4) end
 
-    -- сброс всего
     local label = 'Сбросить всё'
-    local lw = text_w(label, 13 * s) + 20 * s
-    local cy = y + 20 * s
-    if st.hovered == 'eqreset' then rrect(a, x1 + 8 * s, cy - 14 * s, x1 + 8 * s + lw, cy + 14 * s, 4 * s, C.hover) end
-    text(a, x1 + 8 * s + lw / 2, cy, label, 13 * s, st.hovered == 'eqreset' and C.icon_hi or C.text, 5)
-    elements[#elements + 1] = {id = 'eqreset', x1 = x1 + 8 * s, y1 = cy - 14 * s, x2 = x1 + 8 * s + lw, y2 = cy + 14 * s}
+    local lw = text_w(label, 12 * s) + 16 * s
+    local lx, ly = rx1 + 8 * s, top + rh * 2.5
+    if st.hovered == 'eqreset' then rrect(a, lx, ly - 11 * s, lx + lw, ly + 11 * s, 4 * s, C.hover) end
+    text(a, lx + lw / 2, ly, label, 12 * s, st.hovered == 'eqreset' and C.icon_hi or C.text, 5)
+    elements[#elements + 1] = {id = 'eqreset', x1 = lx, y1 = ly - 11 * s, x2 = lx + lw, y2 = ly + 11 * s}
 end
 
 local function render()
@@ -512,7 +519,7 @@ local function render()
     draw_eq(a)
     draw_playlist(a)
 
-    -- подсказки: над панелью, а у кнопок панели изображения — под кнопкой
+    -- подсказки: над панелью управления или над кнопкой панели изображения
     local tip, tx, ty2
     if (st.hovered == 'seek' or st.dragging == 'seek') and dur > 0 and seek_area then
         local fr = math.max(0, math.min((st.mx - sx1) / (sx2 - sx1), 1))
@@ -523,7 +530,7 @@ local function render()
         for _, e in ipairs(elements) do
             if e.id == st.hovered then
                 tx = (e.x1 + e.x2) / 2
-                if e.id:find('^eq') then ty2 = e.y2 + 28 * s end
+                if e.id:find('^eq') then ty2 = e.y1 - 4 * s end
             end
         end
     end
