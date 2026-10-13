@@ -14,13 +14,22 @@
 - `installer/` — установщик на NSIS:
   - `GomLike.nsi` — установка в выбранную папку для текущего пользователя, ярлыки, ассоциации файлов, удаление
   - `getmpv.ps1` — во время установки скачивает свежую сборку mpv ([shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake))
-- `tools/build.sh` — сборка `GomLike-Setup.exe`
+- `tools/build.ps1` (Windows), `tools/build.sh` (Linux) — сборка `GomLike-Setup.exe`
 
 ## Сборка
+
+Windows:
+
+```
+winget install NSIS.NSIS
+powershell -ExecutionPolicy Bypass -File tools\build.ps1
+```
+
+Linux:
 
 ```
 sudo apt install nsis
 tools/build.sh
 ```
 
-Для проверки установщика без скачивания mpv: `makensis -DTEST installer/GomLike.nsi` (после подготовки `installer/payload`, см. build.sh) — соберёт `test-setup.exe` с заглушкой вместо mpv.
+Для проверки установщика без скачивания mpv: `tools\build.ps1 -Test` (или `makensis -DTEST installer/GomLike.nsi` после подготовки `installer/payload`, см. build.sh) — соберёт `test-setup.exe` с заглушкой вместо mpv.
