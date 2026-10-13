@@ -297,6 +297,9 @@ actions.eqreset = image_reset
 -- ---------- раскладка и отрисовка ----------
 local function panel_shown() return not st.fs or st.visible end
 
+-- плейлист — панель справа рядом с видео (видео отодвигается, а не закрывается)
+local function pl_width() return math.floor(math.min(380 * st.scale, st.w * 0.45) + 0.5) end
+
 local base_sub_margin = mp.get_property_number('sub-margin-y', 22)
 local function update_margin()
     local m = 0
@@ -304,6 +307,11 @@ local function update_margin()
     if math.abs(m - st.margin) > 1e-6 then
         st.margin = m
         mp.set_property_number('video-margin-ratio-bottom', m)
+    end
+    local mr = (st.pl_open and st.w > 0) and pl_width() / st.w or 0
+    if math.abs(mr - (st.margin_r or 0)) > 1e-6 then
+        st.margin_r = mr
+        mp.set_property_number('video-margin-ratio-right', mr)
     end
     -- субтитры не должны прятаться под панелью: приподнимаем их, пока она видна
     local sm = base_sub_margin
@@ -336,10 +344,10 @@ local function draw_playlist(a)
     local list = st.playlist or {}
     local n = #list
     local x2, y1 = w, 0
-    local x1 = w - math.min(420 * s, w * 0.45)
+    local x1 = w - pl_width()
     local y2 = panel_shown() and panel_top or h
     pl_box = {x1 = x1, y1 = y1, x2 = x2, y2 = y2}
-    rect(a, x1, y1, x2, y2, C.panel, '10')
+    rect(a, x1, y1, x2, y2, C.panel)
     rect(a, x1, y1, x1 + 1 * s, y2, C.sep)
 
     local hh = 38 * s
@@ -406,7 +414,7 @@ local function draw_eq(a)
     local s = st.scale
     local hh, rh, bs = 28 * s, 26 * s, 28 * s
     -- если открыт плейлист, полоса помещается слева от него
-    local room = st.pl_open and st.w - math.min(420 * s, st.w * 0.45) or st.w
+    local room = st.pl_open and st.w - pl_width() or st.w
     local bw = math.min(800 * s, room - 24 * s)
     local x1 = (room - bw) / 2
     local x2 = x1 + bw
@@ -831,8 +839,82 @@ local function wheel(dir)
     end
 end
 
+-- ---------- плейлист сбоку: окно расширяется вправо ----------
+-- Как пристыкованный плейлист GOM: при открытии окно становится шире на ширину плейлиста,
+-- и видео не меняет размер. Положение окна mpv не сообщает, поэтому берём его у Windows
+-- через LuaJIT FFI. Если расширяться некуда (развёрнуто, полный экран, не помещается
+-- на экране), окно не трогаем — видео просто сжимается влево (video-margin-ratio-right).
+local win32
+if is_windows then
+    local ok, ffi = pcall(require, 'ffi')
+    if ok then
+        pcall(ffi.cdef, [[
+            typedef struct { long left, top, right, bottom; } GL_RECT;
+            typedef struct { unsigned long cbSize; GL_RECT rcMonitor; GL_RECT rcWork; unsigned long dwFlags; } GL_MONITORINFO;
+            int GetWindowRect(void *hwnd, GL_RECT *rect);
+            int SetWindowPos(void *hwnd, void *after, int x, int y, int cx, int cy, unsigned int flags);
+            int IsZoomed(void *hwnd);
+            void *MonitorFromWindow(void *hwnd, unsigned long flags);
+            int GetMonitorInfoW(void *monitor, GL_MONITORINFO *info);
+        ]])
+        local ok2, user32 = pcall(ffi.load, 'user32')
+        if ok2 then win32 = {ffi = ffi, user32 = user32} end
+    end
+end
+
+local function window_handle()
+    local id = mp.get_property_number('window-id')
+    return win32 and id and win32.ffi.cast('void*', id) or nil
+end
+
+-- сдвигает левый край окна на dx и меняет ширину на dw (SWP_NOZORDER | SWP_NOACTIVATE)
+local function window_adjust(hwnd, dx, dw)
+    local r = win32.ffi.new('GL_RECT')
+    if win32.user32.GetWindowRect(hwnd, r) == 0 then return false end
+    win32.user32.SetWindowPos(hwnd, nil, r.left + dx, r.top, r.right - r.left + dw, r.bottom - r.top, 0x14)
+    return true
+end
+
+local saved_opts
+local function dock_playlist(open)
+    local hwnd = window_handle()
+    if open then
+        st.dock = nil
+        if hwnd and not st.fs and win32.user32.IsZoomed(hwnd) == 0 then
+            local grow = math.floor(380 * st.scale + 0.5)
+            local r, mi = win32.ffi.new('GL_RECT'), win32.ffi.new('GL_MONITORINFO')
+            mi.cbSize = win32.ffi.sizeof(mi)
+            if win32.user32.GetWindowRect(hwnd, r) ~= 0
+                and win32.user32.GetMonitorInfoW(win32.user32.MonitorFromWindow(hwnd, 2), mi) ~= 0 then
+                local work = mi.rcWork
+                local new_w = r.right - r.left + grow
+                if new_w <= work.right - work.left then
+                    -- не помещается справа — сдвигаем окно влево ровно настолько, насколько нужно
+                    local shift = math.min(0, work.right - (r.left + new_w))
+                    if window_adjust(hwnd, shift, grow) then st.dock = {grow = grow, shift = shift} end
+                end
+            end
+        end
+        -- пока плейлист открыт, mpv не подгоняет окно под следующий файл (иначе отберёт
+        -- добавленную ширину) и не держит пропорции окна при ручном изменении размера
+        saved_opts = {
+            ['auto-window-resize'] = mp.get_property('auto-window-resize'),
+            ['keepaspect-window'] = mp.get_property('keepaspect-window'),
+        }
+        for k in pairs(saved_opts) do mp.set_property(k, 'no') end
+    else
+        if st.dock and hwnd and not st.fs and win32.user32.IsZoomed(hwnd) == 0 then
+            window_adjust(hwnd, -st.dock.shift, -st.dock.grow)
+        end
+        st.dock = nil
+        for k, v in pairs(saved_opts or {}) do mp.set_property(k, v) end
+        saved_opts = nil
+    end
+end
+
 local function toggle_playlist()
     st.pl_open = not st.pl_open
+    dock_playlist(st.pl_open)
     if st.pl_open then
         local cur = (mp.get_property_number('playlist-pos', 0) or 0) + 1
         st.pl_scroll = math.max(0, cur - math.floor((st.pl_rows or 12) / 2))
