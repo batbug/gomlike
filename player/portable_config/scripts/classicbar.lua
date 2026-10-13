@@ -169,9 +169,7 @@ local actions = {
     play = function() cmd('cycle', 'pause') end,
     stop = function() mp.set_property_bool('pause', true); cmd('seek', '0', 'absolute') end,
     prev = uosc('prev'), next = uosc('next'), open = open_dialog,
-    subs = uosc('subtitles'), audio = uosc('audio'),
-    -- то же системное меню Windows, что и по правому клику (пункты в menu.conf)
-    menu = function() cmd('script-binding', 'select/context-menu') end,
+    -- subs, audio и menu (системные меню Windows) — ниже, у правого клика
     mute = function() cmd('cycle', 'mute') end,
     fullscreen = function() cmd('cycle', 'fullscreen') end,
     time = function() st.remaining = not st.remaining; dirty = true end,
@@ -895,6 +893,60 @@ watch('fullscreen', 'fs', function(v)
     st.visible = true
     if st.fs then hide_timer:kill(); hide_timer:resume() else hide_timer:kill() end
 end)
+
+-- ---------- системные меню Windows: правый клик, субтитры, звук ----------
+-- Системное меню у mpv одно: свойство menu-data, его заполняет select.lua из menu.conf.
+-- Для кнопок субтитров и звука на время подменяем menu-data разделом «Субтитры» или «Звук»
+-- (сверху дорожки, ниже остальные пункты раздела). Полное меню возвращаем перед правым
+-- кликом; select.lua и сам публикует его заново, когда после выбора меняется дорожка.
+-- Названия разделов совпадают с menu.conf.
+local full_menu
+local function find_item(items, title)
+    for _, it in ipairs(items or {}) do
+        if it.title == title then return it end
+    end
+end
+
+local function show_section(section)
+    -- mpv показывает меню только у курсора внутри окна
+    if not (mp.get_property_native('mouse-pos') or {}).hover then return false end
+    local md = mp.get_property_native('menu-data')
+    if type(md) == 'table' and find_item(md, section) then full_menu = md end
+    local sec = find_item(full_menu, section)
+    if not (sec and sec.submenu) then return false end
+    local items = {}
+    local tracks = find_item(sec.submenu, '&Дорожка')
+    if tracks and tracks.submenu and #tracks.submenu > 0 then
+        for _, it in ipairs(tracks.submenu) do items[#items + 1] = it end
+        items[#items + 1] = {type = 'separator'}
+    end
+    for _, it in ipairs(sec.submenu) do
+        if it ~= tracks then items[#items + 1] = it end
+    end
+    mp.set_property_native('menu-data', items)
+    cmd('context-menu')
+    return true
+end
+
+local function show_full_menu()
+    local md = mp.get_property_native('menu-data')
+    if full_menu and not (type(md) == 'table' and find_item(md, '&Звук')) then
+        mp.set_property_native('menu-data', full_menu)
+    end
+    cmd('context-menu')
+end
+
+-- правый клик: как у mpv, меню показывается при отпускании кнопки
+mp.add_key_binding(nil, 'context-menu', function(t)
+    if t.event == 'up' or t.event == 'press' then show_full_menu() end
+end, {complex = true})
+actions.menu = show_full_menu
+
+-- если курсор вне окна (Alt+S / Alt+A с клавиатуры), открываем меню uosc внутри окна
+actions.subs = function() if not show_section('С&убтитры') then cmd('script-binding', 'uosc/subtitles') end end
+actions.audio = function() if not show_section('&Звук') then cmd('script-binding', 'uosc/audio') end end
+mp.add_key_binding(nil, 'subs-menu', actions.subs)
+mp.add_key_binding(nil, 'audio-menu', actions.audio)
 
 mp.add_key_binding(nil, 'open', open_dialog)
 -- клик по видео — пауза (с маленькой задержкой, чтобы не мешать двойному клику),
