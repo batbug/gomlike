@@ -1429,7 +1429,10 @@ function Menu:render()
 		-- Draw submenu if selected
 		local submenu_rect, current_item = nil, is_current and menu.selected_index and menu.items[menu.selected_index]
 		local submenu_is_hovered = false
-		if current_item and current_item.items then
+		-- GomLike: in narrow windows the submenu preview doesn't fit and gets cut off at the
+		-- window edge, so it is only drawn when it fits (clicking the item still opens it)
+		if current_item and current_item.items
+			and bg_rect.bx + self.gap + (current_item.width or 0) + self.padding * 2 <= display.width then
 			submenu_rect = draw_menu(current_item --[[@as MenuStack]], bg_rect.bx + self.gap, 1)
 			cursor:zone('primary_down', submenu_rect, self:create_action(function(shortcut)
 				self:activate_selected_item(shortcut, true)

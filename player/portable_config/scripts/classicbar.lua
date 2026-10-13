@@ -108,13 +108,39 @@ local function open_dialog()
     local path = mp.get_property('path')
     if path and not path:find('://') then dir = path:match('^(.*)[\\/]') or '' end
     local pat = '*.' .. EXTS:gsub(';', ';*.')
+    -- Окно открывает отдельный процесс PowerShell, а Windows не пускает фоновый процесс
+    -- поверх активного окна. Поэтому скрытая форма-владелец диалога становится «дочерней»
+    -- для окна плеера (диалог всегда над ним) и забирает фокус через AttachThreadInput.
+    -- Код на C# компилируется один раз в %TEMP%. Двойных кавычек в -Command нет:
+    -- Windows PowerShell их портит, QQ заменяется на кавычку уже внутри PowerShell.
+    local hwnd = string.format('%d', mp.get_property_number('window-id', 0) or 0)
+    local fg = table.concat({
+        'using System; using System.Runtime.InteropServices;',
+        'public static class GomLikeFg {',
+        '[DllImport(QQuser32.dllQQ)] static extern IntPtr GetForegroundWindow();',
+        '[DllImport(QQuser32.dllQQ)] static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr p);',
+        '[DllImport(QQkernel32.dllQQ)] static extern uint GetCurrentThreadId();',
+        '[DllImport(QQuser32.dllQQ)] static extern bool AttachThreadInput(uint a, uint b, bool attach);',
+        '[DllImport(QQuser32.dllQQ)] static extern bool SetForegroundWindow(IntPtr h);',
+        '[DllImport(QQuser32.dllQQ)] static extern IntPtr SetWindowLongPtr(IntPtr h, int i, IntPtr v);',
+        'public static void Take(IntPtr mine, IntPtr owner) {',
+        '  if (owner != IntPtr.Zero) SetWindowLongPtr(mine, -8, owner);',
+        '  uint fg = GetWindowThreadProcessId(GetForegroundWindow(), IntPtr.Zero), me = GetCurrentThreadId();',
+        '  if (fg != me) AttachThreadInput(fg, me, true);',
+        '  SetForegroundWindow(mine);',
+        '  if (fg != me) AttachThreadInput(fg, me, false);',
+        '} }',
+    }, ' ')
     local ps = table.concat({
         "[Console]::OutputEncoding = [Text.Encoding]::UTF8",
         "Add-Type -AssemblyName System.Windows.Forms",
+        "$dll = Join-Path $env:TEMP 'gomlike-dialog-1.dll'",
+        "if (-not (Test-Path $dll)) { Add-Type -OutputAssembly $dll -TypeDefinition ('" .. fg .. "' -replace 'QQ', [char]34) }",
+        "Add-Type -Path $dll",
         "$o = New-Object System.Windows.Forms.Form",
         "$o.TopMost = $true; $o.ShowInTaskbar = $false; $o.StartPosition = 'Manual'",
         "$o.Location = New-Object System.Drawing.Point(-32000, -32000); $o.Size = New-Object System.Drawing.Size(1, 1)",
-        "$o.Show(); $o.Activate()",
+        "$o.Show(); [GomLikeFg]::Take($o.Handle, [IntPtr][int64]" .. hwnd .. "); $o.Activate()",
         "$d = New-Object System.Windows.Forms.OpenFileDialog",
         "$d.Multiselect = $true",
         "$d.Title = 'Открыть файл'",
@@ -545,15 +571,7 @@ local function render()
     icon(a, x + r, cy, (st.pause or st.idle) and 'play_arrow' or 'pause', 26 * s, C.dark)
     elements[#elements + 1] = {id = 'play', x1 = x, y1 = cy - r, x2 = x + 2 * r, y2 = cy + r}
     x = x + 2 * r + 6 * s
-    x = button('stop', x, 'stop')
-    x = button('prev', x, 'skip_previous')
-    x = button('next', x, 'skip_next')
-    x = button('open', x, 'folder_open', 20)
-    local left_end = x
 
-    -- правая часть (справа налево); при узком окне лишнее прячется
-    local pct = math.floor(st.vol + 0.5) .. '%'
-    local need_right = 6 * bs + 80 * s + 44 * s + 30 * s
     local time_str
     if st.remaining and dur > 0 then
         time_str = '-' .. fmt_time(dur - (st.pos or 0))
@@ -562,34 +580,65 @@ local function render()
     end
     local ts = 14 * s
     local time_w = text_w(time_str, ts) + 20 * s
-    local free = w - left_end - need_right - time_w
-    local show_extra = free > 4 * bs
+    local sp = math.abs(st.speed - 1) > 0.001 and string.format('%.2gx', st.speed)
+    local spw = sp and text_w(sp, 14 * s) + 12 * s or 0
 
+    -- что помещается: в узком окне по очереди прячем меню/плейлист/изображение (вместе
+    -- с временем), ползунок громкости, субтитры и дорожку, потом стоп/назад/вперёд/открыть;
+    -- пуск, звук и полный экран видны всегда
+    local tiers = {
+        {extra = true, vol = true, tracks = true, left = true},
+        {vol = true, tracks = true, left = true},
+        {tracks = true, left = true},
+        {left = true},
+        {},
+    }
+    local show
+    for _, t in ipairs(tiers) do
+        show = t
+        local need = x + (t.left and 4 * bs or 0) -- левая часть
+            + 10 * s + bs + (t.vol and 132 * s or 4 * s) + bs + 14 * s -- полный экран, громкость, звук
+            + (t.tracks and 2 * bs or 0) + (t.extra and 3 * bs + time_w or 0) + spw + 8 * s
+        if need <= w then break end
+    end
+
+    if show.left then
+        x = button('stop', x, 'stop')
+        x = button('prev', x, 'skip_previous')
+        x = button('next', x, 'skip_next')
+        x = button('open', x, 'folder_open', 20)
+    end
+    local left_end = x
+
+    -- правая часть (справа налево)
     local rx = w - 10 * s
     rx = rx - bs; button('fullscreen', rx, st.fs and 'fullscreen_exit' or 'fullscreen', 24)
-    rx = rx - 40 * s
-    text(a, rx + 36 * s, cy, pct, 13 * s, C.dim, 6)
-    -- громкость
-    local vx2, vx1 = rx - 6 * s, rx - 86 * s
-    rrect(a, vx1, cy - 2 * s, vx2, cy + 2 * s, 2 * s, C.track)
-    local vfrac = st.mute and 0 or math.min(st.vol / 100, 1)
-    if vfrac > 0 then rrect(a, vx1, cy - 2 * s, vx1 + (vx2 - vx1) * vfrac, cy + 2 * s, 2 * s, C.accent) end
-    if st.hovered == 'vol' or st.dragging == 'vol' then circle(a, vx1 + (vx2 - vx1) * vfrac, cy, 6 * s, C.icon_hi) end
-    vol_area = {x1 = vx1 - 6 * s, x2 = vx2 + 6 * s, y1 = cy - 12 * s, y2 = cy + 12 * s, tx1 = vx1, tx2 = vx2}
-    rx = vx1 - 6 * s - bs
+    if show.vol then
+        rx = rx - 40 * s
+        text(a, rx + 36 * s, cy, math.floor(st.vol + 0.5) .. '%', 13 * s, C.dim, 6)
+        local vx2, vx1 = rx - 6 * s, rx - 86 * s
+        rrect(a, vx1, cy - 2 * s, vx2, cy + 2 * s, 2 * s, C.track)
+        local vfrac = st.mute and 0 or math.min(st.vol / 100, 1)
+        if vfrac > 0 then rrect(a, vx1, cy - 2 * s, vx1 + (vx2 - vx1) * vfrac, cy + 2 * s, 2 * s, C.accent) end
+        if st.hovered == 'vol' or st.dragging == 'vol' then circle(a, vx1 + (vx2 - vx1) * vfrac, cy, 6 * s, C.icon_hi) end
+        vol_area = {x1 = vx1 - 6 * s, x2 = vx2 + 6 * s, y1 = cy - 12 * s, y2 = cy + 12 * s, tx1 = vx1, tx2 = vx2}
+        rx = vx1 - 6 * s - bs
+    else
+        rx = rx - 4 * s - bs
+    end
     local vicon = (st.mute or st.vol <= 0) and 'volume_off' or (st.vol < 50 and 'volume_down' or 'volume_up')
     button('mute', rx, vicon)
     rx = rx - 8 * s; sep(rx); rx = rx - 6 * s
-    if show_extra then
+    if show.extra then
         rx = rx - bs; button('menu', rx, 'tune')
         rx = rx - bs; button('list', rx, 'queue_music')
         rx = rx - bs; button('image', rx, 'brightness_6', 20, st.eq_open and C.accent or nil)
     end
-    rx = rx - bs; button('audio', rx, 'audiotrack', 20)
-    rx = rx - bs; button('subs', rx, 'subtitles')
-    if math.abs(st.speed - 1) > 0.001 then
-        local sp = string.format('%.2gx', st.speed)
-        local spw = text_w(sp, 14 * s) + 12 * s
+    if show.tracks then
+        rx = rx - bs; button('audio', rx, 'audiotrack', 20)
+        rx = rx - bs; button('subs', rx, 'subtitles')
+    end
+    if sp then
         rx = rx - spw
         if st.hovered == 'speed' then rrect(a, rx, cy - bs / 2, rx + spw, cy + bs / 2, 4 * s, C.hover) end
         text(a, rx + spw / 2, cy, sp, 14 * s, C.accent, 5)
