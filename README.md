@@ -13,10 +13,15 @@
 - `player/README.txt` — инструкция для пользователя (кладётся в папку установки)
 - `installer/` — установщик на NSIS:
   - `GomLike.nsi` — установка в выбранную папку для текущего пользователя, ярлыки, ассоциации файлов, удаление
-  - `getmpv.ps1` — во время установки скачивает свежую сборку mpv ([shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake))
-- `tools/build.ps1` (Windows), `tools/build.sh` (Linux) — сборка `GomLike-Setup.exe`
+  - `getmpv.ps1` — скачивает свежую сборку mpv ([shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake)): во время установки или при сборке офлайн-версии
+- `tools/build.ps1` (Windows), `tools/build.sh` (Linux) — сборка установщиков
 
 ## Сборка
+
+Собираются два установщика:
+
+- `installer/GomLike-Setup.exe` (2 МБ) — скачивает mpv во время установки;
+- `installer/GomLike-Setup-Offline.exe` (около 38 МБ) — mpv уже внутри, интернет не нужен. mpv для него скачивается при первой сборке в `installer/mpv` и дальше берётся оттуда; свежий — с ключом `-UpdateMpv` (`--update-mpv` в build.sh).
 
 Windows:
 
@@ -28,7 +33,7 @@ powershell -ExecutionPolicy Bypass -File tools\build.ps1
 Linux:
 
 ```
-sudo apt install nsis
+sudo apt install nsis curl p7zip-full
 tools/build.sh
 ```
 

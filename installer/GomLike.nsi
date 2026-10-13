@@ -22,8 +22,12 @@ SetCompressor /SOLID lzma
 
 Name "${APP}"
 Caption "Установка ${APP}"
+; -DOFFLINE: mpv лежит внутри установщика (installer\mpv, готовит tools/build.ps1),
+; без него установщик скачивает mpv во время установки
 !ifdef TEST
 OutFile "test-setup.exe"
+!else ifdef OFFLINE
+OutFile "GomLike-Setup-Offline.exe"
 !else
 OutFile "GomLike-Setup.exe"
 !endif
@@ -37,7 +41,11 @@ BrandingText "${APP}"
 !define MUI_COMPONENTSPAGE_NODESC
 
 !define MUI_WELCOMEPAGE_TITLE "Установка ${APP}"
+!ifdef OFFLINE
+!define MUI_WELCOMEPAGE_TEXT "Видеоплеер на движке mpv: без рекламы, без обновлений, с классической панелью управления.$\r$\n$\r$\nВсё нужное уже внутри установщика, интернет не нужен. Плеер в интернет тоже не ходит.$\r$\n$\r$\nНажми «Далее»."
+!else
 !define MUI_WELCOMEPAGE_TEXT "Видеоплеер на движке mpv: без рекламы, без обновлений, с классической панелью управления.$\r$\n$\r$\nВо время установки нужен интернет: установщик скачает свежий mpv (около 35 МБ). Потом плеер в интернет не ходит.$\r$\n$\r$\nНажми «Далее»."
+!endif
 !define MUI_DIRECTORYPAGE_TEXT_TOP "Выбери папку для плеера. Подойдёт любая папка, куда у тебя есть права на запись (Program Files не подойдёт: плеер хранит там настройки и позиции просмотра)."
 !define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_TEXT "Запустить ${APP}"
@@ -114,12 +122,16 @@ FunctionEnd
 ; ---------- секции ----------
 Section "${APP} (обязательно)" SecMain
     SectionIn RO
-    AddSize 105000
     SetOutPath "$INSTDIR"
     File "gomlike.ico"
     File /r "payload\portable_config"
     File "payload\README.txt"
 
+!ifdef OFFLINE
+    ; mpv и список его файлов (gomlike-files.txt) для удаления
+    File /r "mpv\*.*"
+!else
+    AddSize 105000
     InitPluginsDir
     File "/oname=$PLUGINSDIR\getmpv.ps1" "getmpv.ps1"
     retry:
@@ -142,6 +154,7 @@ Section "${APP} (обязательно)" SecMain
         MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "Не получилось скачать или распаковать mpv.$\r$\n$\r$\nПроверь интернет. Если плеер сейчас открыт, закрой его. Потом нажми «Повтор»." IDRETRY retry
         Abort "Установка прервана: mpv не скачан."
     ${EndIf}
+!endif
 
     WriteUninstaller "$INSTDIR\uninstall.exe"
     CreateDirectory "$SMPROGRAMS\${APP}"

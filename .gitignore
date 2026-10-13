@@ -1,4 +1,6 @@
 installer/payload/
+installer/mpv/
+installer/mpv.new/
 *.exe
 watch_later/
 !player/portable_config/scripts/uosc/bin/*.exe
