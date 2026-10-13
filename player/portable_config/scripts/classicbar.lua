@@ -467,6 +467,26 @@ local function draw_eq(a)
     elements[#elements + 1] = {id = 'eqreset', x1 = lx, y1 = ly - 11 * s, x2 = lx + lw, y2 = ly + 11 * s}
 end
 
+-- ---------- превью кадра над полосой перемотки (thumbfast) ----------
+-- thumbfast держит фоновый mpv, достаёт им кадр и рисует его поверх окна (overlay-add);
+-- размер превью он присылает в thumbfast-info
+mp.register_script_message('thumbfast-info', function(json)
+    st.thumb = require('mp.utils').parse_json(json)
+    dirty = true
+end)
+
+local thumb_shown
+-- at = {время, x, y} — показать превью, nil — убрать
+local function show_thumb(at)
+    if at then
+        cmd('script-message-to', 'thumbfast', 'thumb', tostring(at[1]), tostring(at[2]), tostring(at[3]))
+        thumb_shown = true
+    elseif thumb_shown then
+        cmd('script-message-to', 'thumbfast', 'clear')
+        thumb_shown = false
+    end
+end
+
 -- ---------- верхняя полоса в полноэкранном режиме (как в GOM) ----------
 -- появляется, когда мышь у верхнего края: название и кнопки окна
 local function topbar_h() return 36 * st.scale end
@@ -523,6 +543,7 @@ local function render()
         draw_topbar(a)
         draw_eq(a)
         draw_playlist(a)
+        show_thumb(nil)
         ov.res_x, ov.res_y, ov.data = w, h, table.concat(a, '\n')
         ov:update()
         return
@@ -660,9 +681,19 @@ local function render()
 
     -- подсказки: над панелью управления или над кнопкой панели изображения
     local tip, tx, ty2
+    local thumb_at
     if (st.hovered == 'seek' or st.dragging == 'seek') and dur > 0 and seek_area then
         local fr = math.max(0, math.min((st.mx - sx1) / (sx2 - sx1), 1))
         tip, tx = fmt_time(fr * dur), st.mx
+        -- превью кадра над подсказкой со временем (рисует thumbfast поверх всего)
+        local ti = st.thumb
+        if ti and not ti.disabled and (ti.width or 0) > 0 then
+            local tw, th = ti.width, ti.height
+            local px = math.floor(math.max(4 * s, math.min(st.mx - tw / 2, w - tw - 4 * s)) + 0.5)
+            local py = math.floor(top - 6 * s - 24 * s - 6 * s - th + 0.5)
+            rect(a, px - 2 * s, py - 2 * s, px + tw + 2 * s, py + th + 2 * s, C.tip)
+            thumb_at = {fr * dur, px, py}
+        end
     elseif st.hovered and tip_for(st.hovered) and not st.dragging and not st.menu and not st.hovered:find('^pl') then
         tip = tip_for(st.hovered)
         if st.hovered == 'time' and st.remaining then tip = 'Показать общее время' end
@@ -682,6 +713,7 @@ local function render()
         rrect(a, tx1, ty2 - 24 * s, tx1 + tw, ty2, 4 * s, C.tip, '30')
         text(a, tx1 + tw / 2, ty2 - 12 * s, tip, fs, C.text, 5)
     end
+    show_thumb(thumb_at)
 
     ov.res_x, ov.res_y, ov.data = w, h, table.concat(a, '\n')
     ov:update()
@@ -838,6 +870,8 @@ mp.observe_property('mouse-pos', 'native', function(_, m)
     elseif st.dragging and st.dragging:find('^eq:') then eq_to(st.dragging, st.mx) end
     local id = m.hover and over_ui(m.x, m.y) and hit(m.x, m.y) or nil
     if id ~= st.hovered then st.hovered = id; dirty = true end
+    -- над полосой перемотки время в подсказке и превью следуют за мышью и на паузе
+    if moved and (id == 'seek' or st.dragging == 'seek') then dirty = true end
     set_bindings(st.dragging ~= nil or (m.hover and over_ui(m.x, m.y)))
 end)
 

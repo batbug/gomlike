@@ -25,5 +25,7 @@ SOFTWARE.
 This license covers GomLike's own files. Third-party parts keep their licenses:
 - player/portable_config/scripts/uosc and player/portable_config/fonts:
   uosc (https://github.com/tomasklaen/uosc), LGPL-2.1, see scripts/uosc/LICENSE.LGPL
+- player/portable_config/scripts/thumbfast.lua:
+  thumbfast (https://github.com/po5/thumbfast), MPL-2.0, see the file header
 - mpv, downloaded by the installer or bundled in GomLike-Setup-Offline.exe:
   https://mpv.io, GPLv2+, see installer/licenses/mpv

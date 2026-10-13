@@ -21,6 +21,7 @@
   - `shaders/` — отражение картинки для панели F7 (шейдерами на видеокарте: фильтры `hflip`/`vflip` не работают с аппаратным декодированием)
   - `script-opts/classicbar.conf` — цвета, высота панели, автоскрытие
   - `scripts/uosc/`, `fonts/` — [uosc](https://github.com/tomasklaen/uosc) 5.13.0 (сторонний проект; остался запасным меню субтитров и звука, когда Alt+S / Alt+A нажаты с курсором вне окна, и переходом к соседнему файлу по PgUp / PgDn; LGPL-2.1, `scripts/uosc/LICENSE.LGPL`; одна правка в `elements/Menu.lua`: превью подменю не рисуется, если не помещается в окно, она помечена комментарием `GomLike:`)
+  - `scripts/thumbfast.lua`, `script-opts/thumbfast.conf` — [thumbfast](https://github.com/po5/thumbfast) (сторонний проект, MPL-2.0, без изменений, коммит `0f711de313`): превью кадра над полосой перемотки; фоновый процесс для превью запускает тот же `GomLike.exe`
 - `player/README.txt` — инструкция для пользователя (кладётся в папку установки)
 - `installer/` — установщик на NSIS:
   - `GomLike.nsi` — установка в выбранную папку для текущего пользователя, ярлыки, ассоциации файлов, удаление
@@ -65,4 +66,4 @@ powershell -ExecutionPolicy Bypass -File tools\vtscan.ps1
 
 ## Лицензия
 
-Файлы GomLike — [MIT](LICENSE). Сторонние части со своими лицензиями: [uosc](https://github.com/tomasklaen/uosc) — LGPL-2.1, [mpv](https://mpv.io) — GPLv2+ (не хранится в репозитории: скачивается установщиком или при сборке офлайн-версии).
+Файлы GomLike — [MIT](LICENSE). Сторонние части со своими лицензиями: [uosc](https://github.com/tomasklaen/uosc) — LGPL-2.1, [thumbfast](https://github.com/po5/thumbfast) — MPL-2.0, [mpv](https://mpv.io) — GPLv2+ (не хранится в репозитории: скачивается установщиком или при сборке офлайн-версии).
