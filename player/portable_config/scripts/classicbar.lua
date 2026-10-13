@@ -1,0 +1,564 @@
+-- classicbar.lua — классическая панель управления под видео (тёмная, оранжевый акцент)
+-- Настройки: portable_config/script-opts/classicbar.conf
+
+local mp = require 'mp'
+local options = require 'mp.options'
+
+local o = {
+    accent = 'EF9F27',        -- цвет акцента RRGGBB
+    accent_dark = 'BA7517',
+    panel = '232326',         -- фон панели
+    height = 64,              -- высота панели в пикселях (при масштабе 100%)
+    hide_timeout = 1.5,       -- через сколько секунд прятать панель в полноэкранном режиме
+    remaining_time = false,   -- показывать оставшееся время вместо общего
+    icon_font = 'MaterialIconsRound-Regular',
+}
+options.read_options(o, 'classicbar')
+
+-- ---------- цвета ----------
+local function bgr(hex) return hex:sub(5, 6) .. hex:sub(3, 4) .. hex:sub(1, 2) end
+local C = {
+    accent = bgr(o.accent), accent_dark = bgr(o.accent_dark), panel = bgr(o.panel),
+    track = bgr('3A3A3D'), buffered = bgr('4A4A4E'), hover = bgr('34343A'),
+    icon = bgr('C8C8C8'), icon_hi = bgr('FFFFFF'), text = bgr('E8E8E8'), dim = bgr('8A8A8A'),
+    dark = bgr('1C1C1E'), sep = bgr('3A3A3D'), tip = bgr('111113'),
+}
+
+-- ---------- состояние ----------
+local st = {
+    w = 0, h = 0, scale = 1, mx = -1, my = -1, inside = false,
+    pos = nil, dur = nil, cache = nil, pause = false, vol = 100, mute = false, speed = 1,
+    fs = false, idle = true, visible = true, dragging = nil, hovered = nil,
+    remaining = o.remaining_time, margin = -1, bound = false,
+}
+local elements, panel_top, seek_area, vol_area = {}, 0, nil, nil
+local ov = mp.create_osd_overlay('ass-events')
+ov.z = -1
+local dirty = true
+local hide_timer
+
+-- ---------- рисование ----------
+local function f(n) return string.format('%.1f', n) end
+local HEAD = '{\\an7\\pos(0,0)\\bord0\\shad0\\blur0\\1c&H%s&\\1a&H%s&\\p1}'
+
+local function rect(a, x1, y1, x2, y2, col, alpha)
+    a[#a + 1] = string.format(HEAD, col, alpha or '00') ..
+        table.concat({'m', f(x1), f(y1), 'l', f(x2), f(y1), f(x2), f(y2), f(x1), f(y2)}, ' ') .. '{\\p0}'
+end
+
+local function rrect(a, x1, y1, x2, y2, r, col, alpha)
+    r = math.min(r, (x2 - x1) / 2, (y2 - y1) / 2)
+    local c = r * 0.5523
+    local p = {
+        'm', x1 + r, y1, 'l', x2 - r, y1,
+        'b', x2 - r + c, y1, x2, y1 + r - c, x2, y1 + r,
+        'l', x2, y2 - r,
+        'b', x2, y2 - r + c, x2 - r + c, y2, x2 - r, y2,
+        'l', x1 + r, y2,
+        'b', x1 + r - c, y2, x1, y2 - r + c, x1, y2 - r,
+        'l', x1, y1 + r,
+        'b', x1, y1 + r - c, x1 + r - c, y1, x1 + r, y1,
+    }
+    for i, v in ipairs(p) do if type(v) == 'number' then p[i] = f(v) end end
+    a[#a + 1] = string.format(HEAD, col, alpha or '00') .. table.concat(p, ' ') .. '{\\p0}'
+end
+
+local function circle(a, cx, cy, r, col, alpha)
+    rrect(a, cx - r, cy - r, cx + r, cy + r, r, col, alpha)
+end
+
+local function text(a, x, y, s, size, col, align)
+    a[#a + 1] = string.format('{\\an%d\\pos(%s,%s)\\bord0\\shad0\\blur0\\fs%s\\1c&H%s&}%s',
+        align or 4, f(x), f(y), f(size), col, s)
+end
+
+local function icon(a, x, y, name, size, col)
+    a[#a + 1] = string.format('{\\an5\\pos(%s,%s)\\bord0\\shad0\\blur0\\fn%s\\fs%s\\1c&H%s&}%s',
+        f(x), f(y), o.icon_font, f(size), col, name)
+end
+
+local function fmt_time(t)
+    if not t or t < 0 then t = 0 end
+    t = math.floor(t)
+    return string.format('%02d:%02d:%02d', math.floor(t / 3600), math.floor(t / 60) % 60, t % 60)
+end
+
+local function text_w(s, size)
+    local n = 0
+    for _ in s:gmatch('[^\128-\191]') do n = n + 1 end
+    return n * size * 0.56
+end
+
+-- ---------- действия ----------
+local function cmd(...) mp.commandv(...) end
+local function uosc(name) return function() cmd('script-binding', 'uosc/' .. name) end end
+
+-- ---------- окно выбора файла (обычное окно Windows) ----------
+local is_windows = package.config:sub(1, 1) == '\\'
+local dialog_busy = false
+
+local EXTS = 'mkv;mp4;avi;mov;wmv;flv;webm;m4v;mpg;mpeg;ts;m2ts;mts;vob;3gp;ogv;divx;rm;rmvb;asf;f4v;' ..
+    'mp3;flac;m4a;aac;ogg;opus;wav;wma;ape'
+
+local function open_dialog()
+    if not is_windows then cmd('script-binding', 'uosc/open-file'); return end
+    if dialog_busy then return end
+    dialog_busy = true
+    local dir = ''
+    local path = mp.get_property('path')
+    if path and not path:find('://') then dir = path:match('^(.*)[\\/]') or '' end
+    local pat = '*.' .. EXTS:gsub(';', ';*.')
+    local ps = table.concat({
+        "[Console]::OutputEncoding = [Text.Encoding]::UTF8",
+        "Add-Type -AssemblyName System.Windows.Forms",
+        "$o = New-Object System.Windows.Forms.Form",
+        "$o.TopMost = $true; $o.ShowInTaskbar = $false; $o.StartPosition = 'Manual'",
+        "$o.Location = New-Object System.Drawing.Point(-32000, -32000); $o.Size = New-Object System.Drawing.Size(1, 1)",
+        "$o.Show(); $o.Activate()",
+        "$d = New-Object System.Windows.Forms.OpenFileDialog",
+        "$d.Multiselect = $true",
+        "$d.Title = 'Открыть файл'",
+        "$d.Filter = 'Видео и аудио|" .. pat .. "|Все файлы|*.*'",
+        "$d.InitialDirectory = '" .. dir:gsub("'", "''") .. "'",
+        "if ($d.ShowDialog($o) -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileNames }",
+        "$o.Close()",
+    }, '\n')
+    mp.command_native_async({
+        name = 'subprocess', playback_only = false, capture_stdout = true,
+        args = {'powershell', '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-Command', ps},
+    }, function(ok, res)
+        dialog_busy = false
+        if not ok or not res or not res.stdout then return end
+        local first = true
+        for line in res.stdout:gmatch('[^\r\n]+') do
+            cmd('loadfile', line, first and 'replace' or 'append')
+            first = false
+        end
+    end)
+end
+
+local actions = {
+    play = function() cmd('cycle', 'pause') end,
+    stop = function() mp.set_property_bool('pause', true); cmd('seek', '0', 'absolute') end,
+    prev = uosc('prev'), next = uosc('next'), open = open_dialog,
+    subs = uosc('subtitles'), audio = uosc('audio'), menu = uosc('menu'),
+    mute = function() cmd('cycle', 'mute') end,
+    fullscreen = function() cmd('cycle', 'fullscreen') end,
+    time = function() st.remaining = not st.remaining; dirty = true end,
+    speed = function() mp.set_property_number('speed', 1) end,
+}
+
+local tips = {
+    play = 'Пауза / воспроизведение (Пробел)', stop = 'Стоп', prev = 'Предыдущий файл (PgUp)',
+    next = 'Следующий файл (PgDn)', open = 'Открыть файл (Ctrl+O)', subs = 'Субтитры (Alt+S)',
+    audio = 'Звуковая дорожка (Alt+A)', list = 'Плейлист (колесико мыши, F8)', menu = 'Меню',
+    mute = 'Без звука (M)', fullscreen = 'Полный экран (Enter)', speed = 'Сбросить скорость (Z)',
+    time = 'Показать оставшееся время',
+}
+
+-- ---------- раскладка и отрисовка ----------
+local function panel_shown() return not st.fs or st.visible end
+
+local base_sub_margin = mp.get_property_number('sub-margin-y', 22)
+local function update_margin()
+    local m = 0
+    if not st.fs and st.h > 0 then m = math.floor(o.height * st.scale + 0.5) / st.h end
+    if math.abs(m - st.margin) > 1e-6 then
+        st.margin = m
+        mp.set_property_number('video-margin-ratio-bottom', m)
+    end
+    -- субтитры не должны прятаться под панелью: приподнимаем их, пока она видна
+    local sm = base_sub_margin
+    if (not st.fs or st.visible) and st.h > 0 then
+        sm = base_sub_margin + math.floor(o.height * st.scale * 720 / st.h + 0.5)
+    end
+    if sm ~= st.sub_margin then
+        st.sub_margin = sm
+        mp.set_property_number('sub-margin-y', sm)
+    end
+end
+
+-- ---------- плейлист ----------
+local pl_box
+local function basename(p) return p:gsub('[\\/]+$', ''):match('[^\\/]+$') or p end
+local function strip_ext(n) return n:match('^(.+)%.[^.]+$') or n end
+local function esc(str) return (str:gsub('\\', '\\\226\129\160'):gsub('{', '\\{'):gsub('[\r\n]', ' ')) end
+local function fit(str, width, size)
+    local maxc = math.max(4, math.floor(width / (size * 0.47)))
+    local chars = {}
+    for ch in str:gmatch('[%z\1-\127\194-\244][\128-\191]*') do chars[#chars + 1] = ch end
+    if #chars <= maxc then return str end
+    return table.concat(chars, '', 1, maxc - 1) .. '…'
+end
+
+local function draw_playlist(a)
+    pl_box = nil
+    if not st.pl_open then return end
+    local w, h, s = st.w, st.h, st.scale
+    local list = st.playlist or {}
+    local n = #list
+    local x2, y1 = w, 0
+    local x1 = w - math.min(420 * s, w * 0.45)
+    local y2 = panel_shown() and panel_top or h
+    pl_box = {x1 = x1, y1 = y1, x2 = x2, y2 = y2}
+    rect(a, x1, y1, x2, y2, C.panel, '10')
+    rect(a, x1, y1, x1 + 1 * s, y2, C.sep)
+
+    local hh = 38 * s
+    text(a, x1 + 14 * s, y1 + hh / 2, 'Плейлист', 15 * s, C.text, 4)
+    text(a, x1 + 14 * s + text_w('Плейлист', 15 * s) + 8 * s, y1 + hh / 2, tostring(n), 13 * s, C.dim, 4)
+    local cx = x2 - 8 * s - 28 * s
+    if st.hovered == 'plclose' then rrect(a, cx, y1 + 5 * s, cx + 28 * s, y1 + hh - 5 * s, 4 * s, C.hover) end
+    icon(a, cx + 14 * s, y1 + hh / 2, 'close', 18 * s, st.hovered == 'plclose' and C.icon_hi or C.icon)
+    elements[#elements + 1] = {id = 'plclose', x1 = cx, y1 = y1 + 5 * s, x2 = cx + 28 * s, y2 = y1 + hh - 5 * s}
+    rect(a, x1, y1 + hh, x2, y1 + hh + 1 * s, C.sep)
+
+    local rh = 28 * s
+    local top = y1 + hh + 4 * s
+    local rows = math.max(1, math.floor((y2 - top - 4 * s) / rh))
+    st.pl_rows = rows
+    local maxscroll = math.max(0, n - rows)
+    st.pl_scroll = math.max(0, math.min(st.pl_scroll or 0, maxscroll))
+    for i = st.pl_scroll + 1, math.min(n, st.pl_scroll + rows) do
+        local e = list[i]
+        local ry = top + (i - st.pl_scroll - 1) * rh
+        local id = 'pl:' .. i
+        local cur = e.current or e.playing
+        if st.hovered == id then rect(a, x1 + 1 * s, ry, x2, ry + rh, C.hover) end
+        text(a, x1 + 34 * s, ry + rh / 2, tostring(i), 12 * s, C.dim, 6)
+        if cur then icon(a, x1 + 48 * s, ry + rh / 2, 'play_arrow', 16 * s, C.accent) end
+        local nx = x1 + 60 * s
+        local name = e.title or strip_ext(basename(e.filename or ''))
+        text(a, nx, ry + rh / 2, esc(fit(name, x2 - nx - 14 * s, 13 * s)), 13 * s, cur and C.accent or C.text, 4)
+        elements[#elements + 1] = {id = id, x1 = x1 + 1 * s, y1 = ry, x2 = x2, y2 = ry + rh}
+    end
+    if maxscroll > 0 then
+        local th = math.max(20 * s, (y2 - top) * rows / n)
+        local ty = top + (y2 - top - th) * st.pl_scroll / maxscroll
+        rrect(a, x2 - 5 * s, ty, x2 - 2 * s, ty + th, 1.5 * s, C.buffered)
+    end
+end
+
+local function render()
+    dirty = false
+    local w, h, s = st.w, st.h, st.scale
+    if w <= 0 or h <= 0 then return end
+    update_margin()
+    local a = {}
+    elements, seek_area, vol_area = {}, nil, nil
+
+    if st.idle then
+        icon(a, w / 2, h / 2 - 40 * s, 'folder_open', 64 * s, C.accent)
+        text(a, w / 2, h / 2 + 20 * s, 'Дважды щёлкни, чтобы открыть файл, или перетащи его сюда', 20 * s, C.dim, 5)
+        elements[#elements + 1] = {id = 'open', x1 = w / 2 - 60 * s, y1 = h / 2 - 80 * s, x2 = w / 2 + 60 * s, y2 = h / 2}
+    end
+
+    if not panel_shown() then
+        draw_playlist(a)
+        ov.res_x, ov.res_y, ov.data = w, h, table.concat(a, '\n')
+        ov:update()
+        return
+    end
+
+    local H = o.height * s
+    local top = h - H
+    panel_top = top
+    rect(a, 0, top, w, h, C.panel)
+
+    -- полоса перемотки
+    local sx1, sx2, sy = 12 * s, w - 12 * s, top + 12 * s
+    seek_area = {x1 = sx1 - 6 * s, x2 = sx2 + 6 * s, y1 = top, y2 = top + 22 * s, tx1 = sx1, tx2 = sx2}
+    rrect(a, sx1, sy - 3 * s, sx2, sy + 3 * s, 3 * s, C.track)
+    local dur = st.dur or 0
+    if dur > 0 then
+        if st.cache and st.cache > 0 then
+            local b = math.min(st.cache / dur, 1)
+            rrect(a, sx1, sy - 3 * s, sx1 + (sx2 - sx1) * b, sy + 3 * s, 3 * s, C.buffered)
+        end
+        local p = math.max(0, math.min((st.pos or 0) / dur, 1))
+        local px = sx1 + (sx2 - sx1) * p
+        if px > sx1 + 1 then rrect(a, sx1, sy - 3 * s, px, sy + 3 * s, 3 * s, C.accent) end
+        local over_seek = st.hovered == 'seek' or st.dragging == 'seek'
+        circle(a, px, sy, (over_seek and 7 or 5.5) * s, C.icon_hi)
+    end
+
+    -- ряд кнопок
+    local cy = top + 41 * s
+    local bs = 30 * s
+    local function button(id, x, name, size, col)
+        local x1, x2 = x, x + bs
+        if st.hovered == id then rrect(a, x1, cy - bs / 2, x2, cy + bs / 2, 4 * s, C.hover) end
+        icon(a, (x1 + x2) / 2, cy, name, (size or 22) * s,
+            col or (st.hovered == id and C.icon_hi or C.icon))
+        elements[#elements + 1] = {id = id, x1 = x1, y1 = cy - bs / 2, x2 = x2, y2 = cy + bs / 2}
+        return x2
+    end
+    local function sep(x)
+        rect(a, x, cy - 10 * s, x + 1 * s, cy + 10 * s, C.sep)
+        return x + 1 * s
+    end
+
+    -- левая часть
+    local x = 10 * s
+    local r = 18 * s
+    circle(a, x + r, cy, r, st.hovered == 'play' and C.accent_dark or C.accent)
+    icon(a, x + r, cy, (st.pause or st.idle) and 'play_arrow' or 'pause', 26 * s, C.dark)
+    elements[#elements + 1] = {id = 'play', x1 = x, y1 = cy - r, x2 = x + 2 * r, y2 = cy + r}
+    x = x + 2 * r + 6 * s
+    x = button('stop', x, 'stop')
+    x = button('prev', x, 'skip_previous')
+    x = button('next', x, 'skip_next')
+    x = button('open', x, 'folder_open', 20)
+    local left_end = x
+
+    -- правая часть (справа налево); при узком окне лишнее прячется
+    local pct = math.floor(st.vol + 0.5) .. '%'
+    local need_right = 6 * bs + 80 * s + 44 * s + 30 * s
+    local time_str
+    if st.remaining and dur > 0 then
+        time_str = '-' .. fmt_time(dur - (st.pos or 0))
+    else
+        time_str = fmt_time(st.pos) .. ' / ' .. fmt_time(dur)
+    end
+    local ts = 14 * s
+    local time_w = text_w(time_str, ts) + 20 * s
+    local free = w - left_end - need_right - time_w
+    local show_extra = free > 3 * bs
+
+    local rx = w - 10 * s
+    rx = rx - bs; button('fullscreen', rx, st.fs and 'fullscreen_exit' or 'fullscreen', 24)
+    rx = rx - 40 * s
+    text(a, rx + 36 * s, cy, pct, 13 * s, C.dim, 6)
+    -- громкость
+    local vx2, vx1 = rx - 6 * s, rx - 86 * s
+    rrect(a, vx1, cy - 2 * s, vx2, cy + 2 * s, 2 * s, C.track)
+    local vfrac = st.mute and 0 or math.min(st.vol / 100, 1)
+    if vfrac > 0 then rrect(a, vx1, cy - 2 * s, vx1 + (vx2 - vx1) * vfrac, cy + 2 * s, 2 * s, C.accent) end
+    if st.hovered == 'vol' or st.dragging == 'vol' then circle(a, vx1 + (vx2 - vx1) * vfrac, cy, 6 * s, C.icon_hi) end
+    vol_area = {x1 = vx1 - 6 * s, x2 = vx2 + 6 * s, y1 = cy - 12 * s, y2 = cy + 12 * s, tx1 = vx1, tx2 = vx2}
+    rx = vx1 - 6 * s - bs
+    local vicon = (st.mute or st.vol <= 0) and 'volume_off' or (st.vol < 50 and 'volume_down' or 'volume_up')
+    button('mute', rx, vicon)
+    rx = rx - 8 * s; sep(rx); rx = rx - 6 * s
+    if show_extra then
+        rx = rx - bs; button('menu', rx, 'tune')
+        rx = rx - bs; button('list', rx, 'queue_music')
+    end
+    rx = rx - bs; button('audio', rx, 'audiotrack', 20)
+    rx = rx - bs; button('subs', rx, 'subtitles')
+    if math.abs(st.speed - 1) > 0.001 then
+        local sp = string.format('%.2gx', st.speed)
+        local spw = text_w(sp, 14 * s) + 12 * s
+        rx = rx - spw
+        if st.hovered == 'speed' then rrect(a, rx, cy - bs / 2, rx + spw, cy + bs / 2, 4 * s, C.hover) end
+        text(a, rx + spw / 2, cy, sp, 14 * s, C.accent, 5)
+        elements[#elements + 1] = {id = 'speed', x1 = rx, y1 = cy - bs / 2, x2 = rx + spw, y2 = cy + bs / 2}
+    end
+
+    -- время
+    if left_end + 10 * s + time_w < rx then
+        x = sep(left_end + 8 * s) + 10 * s
+        text(a, x, cy, time_str, ts, st.hovered == 'time' and C.icon_hi or C.text, 4)
+        elements[#elements + 1] = {id = 'time', x1 = x, y1 = cy - bs / 2, x2 = x + time_w - 10 * s, y2 = cy + bs / 2}
+    end
+
+    draw_playlist(a)
+
+    -- подсказки
+    local tip, tx
+    if (st.hovered == 'seek' or st.dragging == 'seek') and dur > 0 and seek_area then
+        local fr = math.max(0, math.min((st.mx - sx1) / (sx2 - sx1), 1))
+        tip, tx = fmt_time(fr * dur), st.mx
+    elseif st.hovered and tips[st.hovered] and not st.dragging and not st.menu and not st.hovered:find('^pl') then
+        tip = tips[st.hovered]
+        if st.hovered == 'time' and st.remaining then tip = 'Показать общее время' end
+        for _, e in ipairs(elements) do if e.id == st.hovered then tx = (e.x1 + e.x2) / 2 end end
+    end
+    if tip and tx then
+        local fs = 13 * s
+        local tw = text_w(tip, fs) + 16 * s
+        local tx1 = math.max(4 * s, math.min(tx - tw / 2, w - tw - 4 * s))
+        local ty2 = top - 6 * s
+        rrect(a, tx1, ty2 - 24 * s, tx1 + tw, ty2, 4 * s, C.tip, '30')
+        text(a, tx1 + tw / 2, ty2 - 12 * s, tip, fs, C.text, 5)
+    end
+
+    ov.res_x, ov.res_y, ov.data = w, h, table.concat(a, '\n')
+    ov:update()
+end
+
+-- ---------- мышь ----------
+local function in_box(b, x, y) return b and x >= b.x1 and x <= b.x2 and y >= b.y1 and y <= b.y2 end
+
+local function hit(x, y)
+    if in_box(seek_area, x, y) then return 'seek' end
+    if in_box(vol_area, x, y) then return 'vol' end
+    for _, e in ipairs(elements) do if in_box(e, x, y) then return e.id end end
+    return nil
+end
+
+local function seek_to(x, exact)
+    if not seek_area or not st.dur or st.dur <= 0 then return end
+    local fr = math.max(0, math.min((x - seek_area.tx1) / (seek_area.tx2 - seek_area.tx1), 1))
+    cmd('seek', tostring(fr * 100), exact and 'absolute-percent+exact' or 'absolute-percent+keyframes')
+end
+
+local function vol_to(x)
+    local fr = math.max(0, math.min((x - vol_area.tx1) / (vol_area.tx2 - vol_area.tx1), 1))
+    mp.set_property_number('volume', math.floor(fr * 100 + 0.5))
+    if st.mute then mp.set_property_bool('mute', false) end
+end
+
+local function on_left(t)
+    if t.event == 'down' then
+        local id = hit(st.mx, st.my)
+        if id == 'seek' then st.dragging = 'seek'; seek_to(st.mx, false)
+        elseif id == 'vol' then st.dragging = 'vol'; vol_to(st.mx)
+        else st.pressed = id end
+        dirty = true
+    elseif t.event == 'up' then
+        if st.dragging == 'seek' then seek_to(st.mx, true) end
+        st.dragging = nil
+        -- кнопки срабатывают на отпускание, чтобы открытые меню не закрывались тем же кликом
+        local id = st.pressed
+        st.pressed = nil
+        if id and hit(st.mx, st.my) == id then
+            if id:sub(1, 3) == 'pl:' then
+                cmd('playlist-play-index', tostring(tonumber(id:sub(4)) - 1))
+            elseif actions[id] then
+                actions[id]()
+            end
+        end
+        dirty = true
+    end
+end
+
+local function over_ui(x, y)
+    if st.idle and hit(x, y) == 'open' then return true end
+    if st.pl_open and in_box(pl_box, x, y) then return true end
+    return panel_shown() and y >= panel_top - 2
+end
+
+-- колесо: над плейлистом прокручивает список, над панелью меняет громкость
+local function wheel(dir)
+    if st.pl_open and in_box(pl_box, st.mx, st.my) then
+        st.pl_scroll = (st.pl_scroll or 0) + dir * 3
+        dirty = true
+    else
+        cmd('add', 'volume', tostring(-dir * 5))
+    end
+end
+
+local function toggle_playlist()
+    st.pl_open = not st.pl_open
+    if st.pl_open then
+        local cur = (mp.get_property_number('playlist-pos', 0) or 0) + 1
+        st.pl_scroll = math.max(0, cur - math.floor((st.pl_rows or 12) / 2))
+        mp.add_forced_key_binding('ESC', 'classicbar-plesc', toggle_playlist)
+        if st.fs then st.visible = true end
+    else
+        mp.remove_key_binding('classicbar-plesc')
+        st.hovered = nil
+    end
+    dirty = true
+end
+actions.list = toggle_playlist
+actions.plclose = toggle_playlist
+mp.add_key_binding(nil, 'playlist', toggle_playlist)
+
+local function set_bindings(on)
+    if on == st.bound then return end
+    st.bound = on
+    if on then
+        mp.add_forced_key_binding('MBTN_LEFT', 'classicbar-left', on_left, {complex = true})
+        mp.add_forced_key_binding('MBTN_LEFT_DBL', 'classicbar-dbl', function() end)
+        mp.add_forced_key_binding('WHEEL_UP', 'classicbar-wup', function() wheel(-1) end)
+        mp.add_forced_key_binding('WHEEL_DOWN', 'classicbar-wdown', function() wheel(1) end)
+    else
+        mp.remove_key_binding('classicbar-left')
+        mp.remove_key_binding('classicbar-dbl')
+        mp.remove_key_binding('classicbar-wup')
+        mp.remove_key_binding('classicbar-wdown')
+    end
+end
+
+local function show_panel()
+    if not st.fs then return end
+    if not st.visible then st.visible = true; dirty = true end
+    hide_timer:kill()
+    hide_timer:resume()
+end
+
+mp.observe_property('mouse-pos', 'native', function(_, m)
+    if not m then return end
+    local moved = m.x ~= st.mx or m.y ~= st.my
+    st.mx, st.my, st.inside = m.x, m.y, m.hover
+    if moved then show_panel() end
+    if st.dragging == 'seek' then seek_to(st.mx, false)
+    elseif st.dragging == 'vol' then vol_to(st.mx) end
+    local id = m.hover and over_ui(m.x, m.y) and hit(m.x, m.y) or nil
+    if id ~= st.hovered then st.hovered = id; dirty = true end
+    set_bindings(st.dragging ~= nil or (m.hover and over_ui(m.x, m.y)))
+end)
+
+hide_timer = mp.add_timeout(o.hide_timeout, function()
+    if st.fs and not st.dragging and not st.pl_open and not (st.inside and st.my >= panel_top) then
+        st.visible = false
+        st.hovered = nil
+        set_bindings(false)
+        dirty = true
+    elseif st.fs then
+        hide_timer:resume()
+    end
+end)
+hide_timer:kill()
+
+-- ---------- свойства ----------
+local function watch(name, key, fn)
+    mp.observe_property(name, 'native', function(_, v)
+        if fn then fn(v) else st[key] = v end
+        dirty = true
+    end)
+end
+watch('time-pos', 'pos')
+watch('duration', 'dur')
+watch('demuxer-cache-time', 'cache')
+watch('pause', 'pause')
+watch('volume', 'vol', function(v) st.vol = v or 100 end)
+watch('mute', 'mute')
+watch('speed', 'speed', function(v) st.speed = v or 1 end)
+watch('idle-active', 'idle', function(v) st.idle = v and true or false end)
+watch('display-hidpi-scale', 'scale', function(v) st.scale = (v and v > 0) and v or 1 end)
+watch('osd-dimensions', nil, function(v)
+    if v then st.w, st.h = v.w, v.h end
+end)
+watch('user-data/uosc/menu/type', 'menu')
+watch('playlist', 'playlist', function(v) st.playlist = v or {} end)
+watch('fullscreen', 'fs', function(v)
+    st.fs = v and true or false
+    st.visible = true
+    if st.fs then hide_timer:kill(); hide_timer:resume() else hide_timer:kill() end
+end)
+
+mp.add_key_binding(nil, 'open', open_dialog)
+-- клик по видео — пауза (с маленькой задержкой, чтобы не мешать двойному клику),
+-- двойной клик — полный экран, на пустом экране — открыть файл
+local click_timer, last_dbl = nil, 0
+local function dbl_time() return (mp.get_property_number('input-doubleclick-time', 300) + 50) / 1000 end
+
+mp.add_key_binding(nil, 'click', function()
+    if st.idle or mp.get_time() - last_dbl < dbl_time() then return end
+    if click_timer then click_timer:kill() end
+    click_timer = mp.add_timeout(dbl_time(), function()
+        click_timer = nil
+        cmd('cycle', 'pause')
+    end)
+end)
+
+mp.add_key_binding(nil, 'dblclick', function()
+    last_dbl = mp.get_time()
+    if click_timer then click_timer:kill(); click_timer = nil end
+    if st.idle then open_dialog() else cmd('cycle', 'fullscreen') end
+end)
+
+mp.add_periodic_timer(1 / 30, function() if dirty then render() end end)

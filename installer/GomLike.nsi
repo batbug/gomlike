@@ -1,0 +1,230 @@
+﻿; GomLike-Setup: ставит плеер в выбранную папку, делает ярлыки и ассоциации файлов.
+; Установка только для текущего пользователя, права администратора не нужны.
+
+Target amd64-unicode
+ManifestDPIAware true
+RequestExecutionLevel user
+SetCompressor /SOLID lzma
+
+!include "MUI2.nsh"
+!include "LogicLib.nsh"
+!include "Sections.nsh"
+!include "TextFunc.nsh"
+
+!define APP "GomLike"
+!define PROGID "GomLike.File"
+!define REG "Software\GomLike"
+!define UNREG "Software\Microsoft\Windows\CurrentVersion\Uninstall\GomLike"
+!define VIDEO "mkv mp4 avi mov wmv flv webm m4v mpg mpeg ts m2ts mts vob 3gp ogv divx rm rmvb asf f4v"
+!define AUDIO "mp3 flac m4a aac ogg opus wav wma ape"
+
+Name "${APP}"
+Caption "Установка ${APP}"
+!ifdef TEST
+OutFile "test-setup.exe"
+!else
+OutFile "GomLike-Setup.exe"
+!endif
+InstallDir "$LOCALAPPDATA\Programs\GomLike"
+InstallDirRegKey HKCU "${REG}" "InstallDir"
+BrandingText "${APP}"
+
+!define MUI_ICON "gomlike.ico"
+!define MUI_UNICON "gomlike.ico"
+!define MUI_ABORTWARNING
+!define MUI_COMPONENTSPAGE_NODESC
+
+!define MUI_WELCOMEPAGE_TITLE "Установка ${APP}"
+!define MUI_WELCOMEPAGE_TEXT "Видеоплеер на движке mpv: без рекламы, без обновлений, с классической панелью управления.$\r$\n$\r$\nВо время установки нужен интернет: установщик скачает свежий mpv (около 35 МБ). Потом плеер в интернет не ходит.$\r$\n$\r$\nНажми «Далее»."
+!define MUI_DIRECTORYPAGE_TEXT_TOP "Выбери папку для плеера. Подойдёт любая папка, куда у тебя есть права на запись (Program Files не подойдёт: плеер хранит там настройки и позиции просмотра)."
+!define MUI_FINISHPAGE_RUN "$INSTDIR\mpv.exe"
+!define MUI_FINISHPAGE_RUN_TEXT "Запустить ${APP}"
+
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_COMPONENTS
+!insertmacro MUI_PAGE_INSTFILES
+!insertmacro MUI_PAGE_FINISH
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
+!insertmacro MUI_LANGUAGE "Russian"
+
+; ---------- ассоциации ----------
+!macro AssocList LIST
+    Push "${LIST} "
+    Call AssocExts
+!macroend
+
+Var ext
+Var rest
+
+Function AssocExts
+    Exch $rest
+    ${Do}
+        StrCpy $ext ""
+        ${Do}
+            StrCpy $0 $rest 1
+            StrCpy $rest $rest "" 1
+            ${If} $0 == " "
+            ${OrIf} $0 == ""
+                ${ExitDo}
+            ${EndIf}
+            StrCpy $ext "$ext$0"
+        ${Loop}
+        ${If} $ext != ""
+            WriteRegStr HKCU "Software\Classes\.$ext\OpenWithProgids" "${PROGID}" ""
+            WriteRegStr HKCU "${REG}\Capabilities\FileAssociations" ".$ext" "${PROGID}"
+            ; делаем GomLike плеером для этого формата: сбрасываем прежний выбор
+            ; (например, GOM), тогда Windows открывает файл программой ниже
+            WriteRegStr HKCU "Software\Classes\.$ext" "" "${PROGID}"
+            DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.$ext\UserChoice"
+            DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.$ext\UserChoiceLatest"
+        ${EndIf}
+    ${LoopUntil} $rest == ""
+    Pop $rest
+FunctionEnd
+
+Function un.UnassocExts
+    Exch $rest
+    ${Do}
+        StrCpy $ext ""
+        ${Do}
+            StrCpy $0 $rest 1
+            StrCpy $rest $rest "" 1
+            ${If} $0 == " "
+            ${OrIf} $0 == ""
+                ${ExitDo}
+            ${EndIf}
+            StrCpy $ext "$ext$0"
+        ${Loop}
+        ${If} $ext != ""
+            DeleteRegValue HKCU "Software\Classes\.$ext\OpenWithProgids" "${PROGID}"
+            ReadRegStr $1 HKCU "Software\Classes\.$ext" ""
+            ${If} $1 == "${PROGID}"
+                DeleteRegValue HKCU "Software\Classes\.$ext" ""
+            ${EndIf}
+        ${EndIf}
+    ${LoopUntil} $rest == ""
+    Pop $rest
+FunctionEnd
+
+; ---------- секции ----------
+Section "${APP} (обязательно)" SecMain
+    SectionIn RO
+    AddSize 105000
+    SetOutPath "$INSTDIR"
+    File "gomlike.ico"
+    File /r "payload\portable_config"
+    File "payload\README.txt"
+
+    InitPluginsDir
+    File "/oname=$PLUGINSDIR\getmpv.ps1" "getmpv.ps1"
+    retry:
+    DetailPrint "Скачиваю mpv с GitHub, это займёт минуту..."
+!ifdef TEST
+    FileOpen $1 "$INSTDIR\mpv.exe" w
+    FileClose $1
+    CreateDirectory "$INSTDIR\doc"
+    FileOpen $1 "$INSTDIR\doc\manual.pdf" w
+    FileClose $1
+    FileOpen $1 "$INSTDIR\gomlike-files.txt" w
+    FileWrite $1 "mpv.exe$\r$\ndoc$\r$\n"
+    FileClose $1
+    StrCpy $0 "0"
+!else
+    nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\getmpv.ps1" -Dest "$INSTDIR"'
+    Pop $0
+!endif
+    ${If} $0 != "0"
+        MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "Не получилось скачать или распаковать mpv.$\r$\n$\r$\nПроверь интернет. Если плеер сейчас открыт, закрой его. Потом нажми «Повтор»." IDRETRY retry
+        Abort "Установка прервана: mpv не скачан."
+    ${EndIf}
+
+    WriteUninstaller "$INSTDIR\uninstall.exe"
+    CreateDirectory "$SMPROGRAMS\${APP}"
+    CreateShortcut "$SMPROGRAMS\${APP}\${APP}.lnk" "$INSTDIR\mpv.exe" "" "$INSTDIR\gomlike.ico" 0
+    CreateShortcut "$SMPROGRAMS\${APP}\Uninstall ${APP}.lnk" "$INSTDIR\uninstall.exe"
+
+    WriteRegStr HKCU "${REG}" "InstallDir" "$INSTDIR"
+    WriteRegStr HKCU "${UNREG}" "DisplayName" "${APP}"
+    WriteRegStr HKCU "${UNREG}" "DisplayIcon" "$INSTDIR\gomlike.ico"
+    WriteRegStr HKCU "${UNREG}" "Publisher" "${APP}"
+    WriteRegStr HKCU "${UNREG}" "InstallLocation" "$INSTDIR"
+    WriteRegStr HKCU "${UNREG}" "UninstallString" '"$INSTDIR\uninstall.exe"'
+    WriteRegDWORD HKCU "${UNREG}" "NoModify" 1
+    WriteRegDWORD HKCU "${UNREG}" "NoRepair" 1
+    WriteRegDWORD HKCU "${UNREG}" "EstimatedSize" 110000
+SectionEnd
+
+Section "Ярлык на рабочем столе" SecDesktop
+    CreateShortcut "$DESKTOP\${APP}.lnk" "$INSTDIR\mpv.exe" "" "$INSTDIR\gomlike.ico" 0
+SectionEnd
+
+SectionGroup /e "Сделать ${APP} плеером по умолчанию" SecAssoc
+    Section "для видео (mkv, mp4, avi и другие)" SecVideo
+        Call RegisterProgId
+        !insertmacro AssocList "${VIDEO}"
+    SectionEnd
+    Section /o "для музыки (mp3, flac и другие)" SecAudio
+        Call RegisterProgId
+        !insertmacro AssocList "${AUDIO}"
+    SectionEnd
+SectionGroupEnd
+
+Function RegisterProgId
+    WriteRegStr HKCU "Software\Classes\${PROGID}" "" "Медиафайл (${APP})"
+    WriteRegStr HKCU "Software\Classes\${PROGID}\DefaultIcon" "" '"$INSTDIR\gomlike.ico",0'
+    WriteRegStr HKCU "Software\Classes\${PROGID}\shell" "" "open"
+    WriteRegStr HKCU "Software\Classes\${PROGID}\shell\open" "FriendlyAppName" "${APP}"
+    WriteRegStr HKCU "Software\Classes\${PROGID}\shell\open\command" "" '"$INSTDIR\mpv.exe" -- "%1"'
+    WriteRegStr HKCU "${REG}\Capabilities" "ApplicationName" "${APP}"
+    WriteRegStr HKCU "${REG}\Capabilities" "ApplicationDescription" "Видеоплеер без рекламы"
+    WriteRegStr HKCU "${REG}\Capabilities" "ApplicationIcon" '"$INSTDIR\gomlike.ico",0'
+    WriteRegStr HKCU "Software\RegisteredApplications" "${APP}" "${REG}\Capabilities"
+FunctionEnd
+
+Function .onInstSuccess
+    ; обновить значки и ассоциации в Проводнике
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+FunctionEnd
+
+; ---------- удаление ----------
+Section "Uninstall"
+    ; ассоциации
+    Push "${VIDEO} ${AUDIO} "
+    Call un.UnassocExts
+    DeleteRegKey HKCU "Software\Classes\${PROGID}"
+    DeleteRegValue HKCU "Software\RegisteredApplications" "${APP}"
+    DeleteRegKey HKCU "${REG}"
+    DeleteRegKey HKCU "${UNREG}"
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+
+    ; ярлыки
+    Delete "$DESKTOP\${APP}.lnk"
+    RMDir /r "$SMPROGRAMS\${APP}"
+
+    ; файлы mpv по списку, который записал установщик (чужие файлы в папке не трогаем)
+    ClearErrors
+    FileOpen $1 "$INSTDIR\gomlike-files.txt" r
+    ${IfNot} ${Errors}
+        ${Do}
+            ClearErrors
+            FileRead $1 $2
+            ${If} ${Errors}
+                ${ExitDo}
+            ${EndIf}
+            ${un.TrimNewLines} "$2" $2
+            ${If} $2 != ""
+                RMDir /r "$INSTDIR\$2"
+                Delete "$INSTDIR\$2"
+            ${EndIf}
+        ${Loop}
+        FileClose $1
+    ${EndIf}
+    Delete "$INSTDIR\gomlike-files.txt"
+    RMDir /r "$INSTDIR\portable_config"
+    Delete "$INSTDIR\gomlike.ico"
+    Delete "$INSTDIR\README.txt"
+    Delete "$INSTDIR\uninstall.exe"
+    RMDir "$INSTDIR"
+SectionEnd

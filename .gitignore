@@ -1,0 +1,4 @@
+installer/payload/
+*.exe
+watch_later/
+!player/portable_config/scripts/uosc/bin/*.exe
