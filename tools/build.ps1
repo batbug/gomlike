@@ -34,17 +34,19 @@ try {
 
     Build @() 'GomLike-Setup.exe'
 
-    if ($UpdateMpv -or -not (Test-Path (Join-Path $mpv 'mpv.exe'))) {
+    # a cache from before the GomLike.exe rename (mpv.exe inside) is downloaded again
+    if ($UpdateMpv -or -not (Test-Path (Join-Path $mpv 'GomLike.exe'))) {
         $fresh = "$mpv.new"
         if (Test-Path $fresh) { Remove-Item $fresh -Recurse -Force }
         New-Item -ItemType Directory -Path $fresh | Out-Null
-        & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $installer 'getmpv.ps1') -Dest $fresh
+        & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $installer 'getmpv.ps1') -Dest $fresh -Icon (Join-Path $installer 'gomlike.ico')
         if ($LASTEXITCODE -ne 0) { Remove-Item $fresh -Recurse -Force; throw "mpv download failed" }
         if (Test-Path $mpv) { Remove-Item $mpv -Recurse -Force }
         Rename-Item $fresh 'mpv'
     }
     else {
-        Write-Output ("Using mpv from installer\mpv, build of {0:yyyy-MM-dd} (-UpdateMpv for a fresh one)" -f (Get-Item (Join-Path $mpv 'mpv.exe')).LastWriteTime)
+        $build = (Get-Content (Join-Path $mpv 'mpv-source.txt') -TotalCount 1) -replace '^mpv build: ', ''
+        Write-Output "Using mpv from installer\mpv: $build (-UpdateMpv for a fresh one)"
     }
     Build @('OFFLINE') 'GomLike-Setup-Offline.exe'
 }

@@ -12,7 +12,7 @@ cp -r ../player/portable_config ../player/README.txt ../LICENSE payload/
 makensis -V2 GomLike.nsi
 echo "Готово: installer/GomLike-Setup.exe"
 
-if [ "$1" = "--update-mpv" ] || [ ! -f mpv/mpv.exe ]; then
+if [ "$1" = "--update-mpv" ] || [ ! -f mpv/GomLike.exe ]; then
     echo "Скачиваю mpv..."
     url=$(curl -fsSL https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest |
         grep -o '"browser_download_url": *"[^"]*/mpv-x86_64-[0-9]\{8\}-git-[0-9a-f]*\.7z"' |
@@ -22,6 +22,11 @@ if [ "$1" = "--update-mpv" ] || [ ! -f mpv/mpv.exe ]; then
     curl -fL -o mpv.new/mpv.7z "$url"
     7z x -y -ompv.new/x mpv.new/mpv.7z >/dev/null
     src=$(dirname "$(find mpv.new/x -name mpv.exe | head -n1)")
+    # плеер называется GomLike.exe, как в getmpv.ps1; значок в exe меняется только
+    # на Windows (build.ps1), здесь у GomLike.exe останется значок mpv
+    mv "$src/mpv.exe" "$src/GomLike.exe"
+    [ -f "$src/mpv.com" ] && mv "$src/mpv.com" "$src/GomLike.com"
+    echo "Внимание: на Linux значок GomLike.exe не меняется, для этого соберите на Windows"
     mkdir mpv.new/out
     # только сам плеер, как в getmpv.ps1: без обновлялки и скриптов установки mpv
     for f in "$src"/*; do

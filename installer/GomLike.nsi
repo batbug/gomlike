@@ -119,6 +119,43 @@ Function un.UnassocExts
     Pop $rest
 FunctionEnd
 
+; ---------- файлы mpv ----------
+; удаляет файлы mpv по списку gomlike-files.txt, который записал установщик (чужие файлы
+; в папке не трогаем); при установке поверх старой версии убирает прежние файлы,
+; например mpv.exe из версий, где плеер ещё не назывался GomLike.exe
+!macro RemoveMpvFilesFn UN
+Function ${UN}RemoveMpvFiles
+    ClearErrors
+    FileOpen $1 "$INSTDIR\gomlike-files.txt" r
+    ${IfNot} ${Errors}
+        ${Do}
+            ClearErrors
+            FileRead $1 $2
+            ${If} ${Errors}
+                ${ExitDo}
+            ${EndIf}
+            ${Do}
+                StrCpy $3 $2 1 -1
+                ${If} $3 == "$\r"
+                ${OrIf} $3 == "$\n"
+                    StrCpy $2 $2 -1
+                ${Else}
+                    ${ExitDo}
+                ${EndIf}
+            ${Loop}
+            ${If} $2 != ""
+                RMDir /r "$INSTDIR\$2"
+                Delete "$INSTDIR\$2"
+            ${EndIf}
+        ${Loop}
+        FileClose $1
+    ${EndIf}
+    Delete "$INSTDIR\gomlike-files.txt"
+FunctionEnd
+!macroend
+!insertmacro RemoveMpvFilesFn ""
+!insertmacro RemoveMpvFilesFn "un."
+
 ; ---------- секции ----------
 Section "${APP} (обязательно)" SecMain
     SectionIn RO
@@ -129,6 +166,8 @@ Section "${APP} (обязательно)" SecMain
     ; лицензии: GomLike (MIT) и mpv (GPLv2+); откуда взят mpv — в mpv-source.txt
     File "/oname=LICENSE.txt" "payload\LICENSE"
     File /r "licenses"
+    ; прежние файлы mpv (при установке поверх старой версии)
+    Call RemoveMpvFiles
 
 !ifdef OFFLINE
     ; mpv и список его файлов (gomlike-files.txt) для удаления
@@ -140,17 +179,17 @@ Section "${APP} (обязательно)" SecMain
     retry:
     DetailPrint "Скачиваю mpv с GitHub, это займёт минуту..."
 !ifdef TEST
-    FileOpen $1 "$INSTDIR\mpv.exe" w
+    FileOpen $1 "$INSTDIR\GomLike.exe" w
     FileClose $1
     CreateDirectory "$INSTDIR\doc"
     FileOpen $1 "$INSTDIR\doc\manual.pdf" w
     FileClose $1
     FileOpen $1 "$INSTDIR\gomlike-files.txt" w
-    FileWrite $1 "mpv.exe$\r$\ndoc$\r$\n"
+    FileWrite $1 "GomLike.exe$\r$\ndoc$\r$\n"
     FileClose $1
     StrCpy $0 "0"
 !else
-    nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\getmpv.ps1" -Dest "$INSTDIR"'
+    nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\getmpv.ps1" -Dest "$INSTDIR" -Icon "$INSTDIR\gomlike.ico"'
     Pop $0
 !endif
     ${If} $0 != "0"
@@ -161,7 +200,7 @@ Section "${APP} (обязательно)" SecMain
 
     WriteUninstaller "$INSTDIR\uninstall.exe"
     CreateDirectory "$SMPROGRAMS\${APP}"
-    CreateShortcut "$SMPROGRAMS\${APP}\${APP}.lnk" "$INSTDIR\mpv.exe" "" "$INSTDIR\gomlike.ico" 0
+    CreateShortcut "$SMPROGRAMS\${APP}\${APP}.lnk" "$INSTDIR\GomLike.exe"
     CreateShortcut "$SMPROGRAMS\${APP}\Uninstall ${APP}.lnk" "$INSTDIR\uninstall.exe"
 
     WriteRegStr HKCU "${REG}" "InstallDir" "$INSTDIR"
@@ -176,7 +215,7 @@ Section "${APP} (обязательно)" SecMain
 SectionEnd
 
 Section "Ярлык на рабочем столе" SecDesktop
-    CreateShortcut "$DESKTOP\${APP}.lnk" "$INSTDIR\mpv.exe" "" "$INSTDIR\gomlike.ico" 0
+    CreateShortcut "$DESKTOP\${APP}.lnk" "$INSTDIR\GomLike.exe"
 SectionEnd
 
 SectionGroup /e "Сделать ${APP} плеером по умолчанию" SecAssoc
@@ -195,7 +234,7 @@ Function RegisterProgId
     WriteRegStr HKCU "Software\Classes\${PROGID}\DefaultIcon" "" '"$INSTDIR\gomlike.ico",0'
     WriteRegStr HKCU "Software\Classes\${PROGID}\shell" "" "open"
     WriteRegStr HKCU "Software\Classes\${PROGID}\shell\open" "FriendlyAppName" "${APP}"
-    WriteRegStr HKCU "Software\Classes\${PROGID}\shell\open\command" "" '"$INSTDIR\mpv.exe" -- "%1"'
+    WriteRegStr HKCU "Software\Classes\${PROGID}\shell\open\command" "" '"$INSTDIR\GomLike.exe" -- "%1"'
     WriteRegStr HKCU "${REG}\Capabilities" "ApplicationName" "${APP}"
     WriteRegStr HKCU "${REG}\Capabilities" "ApplicationDescription" "Видеоплеер без рекламы"
     WriteRegStr HKCU "${REG}\Capabilities" "ApplicationIcon" '"$INSTDIR\gomlike.ico",0'
@@ -206,7 +245,7 @@ Function RunPlayer
     ; установщик сейчас закроется, и Windows оставила бы окно плеера позади других;
     ; пока мы ещё на переднем плане, разрешаем плееру выйти вперёд
     System::Call 'user32::AllowSetForegroundWindow(i -1)'
-    ExecShell "" "$INSTDIR\mpv.exe" "" SW_SHOWNORMAL
+    ExecShell "" "$INSTDIR\GomLike.exe" "" SW_SHOWNORMAL
 FunctionEnd
 
 Function .onInstSuccess
@@ -229,25 +268,7 @@ Section "Uninstall"
     Delete "$DESKTOP\${APP}.lnk"
     RMDir /r "$SMPROGRAMS\${APP}"
 
-    ; файлы mpv по списку, который записал установщик (чужие файлы в папке не трогаем)
-    ClearErrors
-    FileOpen $1 "$INSTDIR\gomlike-files.txt" r
-    ${IfNot} ${Errors}
-        ${Do}
-            ClearErrors
-            FileRead $1 $2
-            ${If} ${Errors}
-                ${ExitDo}
-            ${EndIf}
-            ${un.TrimNewLines} "$2" $2
-            ${If} $2 != ""
-                RMDir /r "$INSTDIR\$2"
-                Delete "$INSTDIR\$2"
-            ${EndIf}
-        ${Loop}
-        FileClose $1
-    ${EndIf}
-    Delete "$INSTDIR\gomlike-files.txt"
+    Call un.RemoveMpvFiles
     Delete "$INSTDIR\mpv-source.txt"
     RMDir /r "$INSTDIR\portable_config"
     RMDir /r "$INSTDIR\licenses"
