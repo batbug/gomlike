@@ -914,14 +914,17 @@ local function show_section(section)
     if type(md) == 'table' and find_item(md, section) then full_menu = md end
     local sec = find_item(full_menu, section)
     if not (sec and sec.submenu) then return false end
+    -- сверху «Без субтитров» (есть только в разделе субтитров) и дорожки, ниже остальное
     local items = {}
+    local off = find_item(sec.submenu, '&Без субтитров')
     local tracks = find_item(sec.submenu, '&Дорожка')
-    if tracks and tracks.submenu and #tracks.submenu > 0 then
+    if off then items[#items + 1] = off end
+    if tracks and tracks.submenu then
         for _, it in ipairs(tracks.submenu) do items[#items + 1] = it end
-        items[#items + 1] = {type = 'separator'}
     end
+    if #items > 0 then items[#items + 1] = {type = 'separator'} end
     for _, it in ipairs(sec.submenu) do
-        if it ~= tracks then items[#items + 1] = it end
+        if it ~= tracks and it ~= off then items[#items + 1] = it end
     end
     mp.set_property_native('menu-data', items)
     cmd('context-menu')
