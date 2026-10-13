@@ -100,7 +100,8 @@ local dialog_busy = false
 local EXTS = 'mkv;mp4;avi;mov;wmv;flv;webm;m4v;mpg;mpeg;ts;m2ts;mts;vob;3gp;ogv;divx;rm;rmvb;asf;f4v;' ..
     'mp3;flac;m4a;aac;ogg;opus;wav;wma;ape'
 
-local function open_dialog()
+-- append: добавить выбранные файлы в конец плейлиста (кнопка «Добавить» в плейлисте)
+local function open_dialog(append)
     if not is_windows then cmd('script-binding', 'uosc/open-file'); return end
     if dialog_busy then return end
     dialog_busy = true
@@ -159,7 +160,7 @@ local function open_dialog()
         if not ok or not res or not res.stdout then return end
         local first = true
         for line in res.stdout:gmatch('[^\r\n]+') do
-            cmd('loadfile', line, first and 'replace' or 'append')
+            cmd('loadfile', line, append and 'append-play' or (first and 'replace' or 'append'))
             first = false
         end
     end)
@@ -361,7 +362,10 @@ local function draw_playlist(a)
 
     local rh = 28 * s
     local top = y1 + hh + 4 * s
-    local rows = math.max(1, math.floor((y2 - top - 4 * s) / rh))
+    -- внизу ряд кнопок редактора: добавить, убрать, вверх, вниз, сортировка, очистить
+    local bar_h = 40 * s
+    local list_y2 = y2 - bar_h
+    local rows = math.max(1, math.floor((list_y2 - top - 4 * s) / rh))
     st.pl_rows = rows
     local maxscroll = math.max(0, n - rows)
     st.pl_scroll = math.max(0, math.min(st.pl_scroll or 0, maxscroll))
@@ -374,7 +378,8 @@ local function draw_playlist(a)
         local id, del = 'pl:' .. i, 'pldel:' .. i
         local cur = e.current or e.playing
         local row_hovered = not drag and (st.hovered == id or st.hovered == del)
-        if row_hovered or (drag and st.pl_from == i) then rect(a, x1 + 1 * s, ry, x2, ry + rh, C.hover) end
+        if st.pl_sel == i and not drag then rect(a, x1 + 1 * s, ry, x2, ry + rh, C.accent, 'C0') end
+        if row_hovered or (drag and st.pl_from == i) then rect(a, x1 + 1 * s, ry, x2, ry + rh, C.hover, '40') end
         text(a, x1 + 34 * s, ry + rh / 2, tostring(i), 12 * s, C.dim, 6)
         if cur then icon(a, x1 + 48 * s, ry + rh / 2, 'play_arrow', 16 * s, C.accent) end
         local nx = x1 + 60 * s
@@ -398,10 +403,27 @@ local function draw_playlist(a)
         end
     end
     if maxscroll > 0 then
-        local th = math.max(20 * s, (y2 - top) * rows / n)
-        local ty = top + (y2 - top - th) * st.pl_scroll / maxscroll
+        local th = math.max(20 * s, (list_y2 - top) * rows / n)
+        local ty = top + (list_y2 - top - th) * st.pl_scroll / maxscroll
         rrect(a, x2 - 5 * s, ty, x2 - 2 * s, ty + th, 1.5 * s, C.buffered)
     end
+
+    -- кнопки редактора; «убрать», «вверх», «вниз» работают с выделенной строкой
+    rect(a, x1, list_y2, x2, list_y2 + 1 * s, C.sep)
+    local sel = st.pl_sel
+    local bs, cy, bx = 32 * s, list_y2 + bar_h / 2, x1 + 10 * s
+    local function pbtn(id, name, enabled)
+        if st.hovered == id and enabled then rrect(a, bx, cy - bs / 2, bx + bs, cy + bs / 2, 4 * s, C.hover) end
+        icon(a, bx + bs / 2, cy, name, 20 * s, not enabled and C.track or (st.hovered == id and C.icon_hi or C.icon))
+        if enabled then elements[#elements + 1] = {id = id, x1 = bx, y1 = cy - bs / 2, x2 = bx + bs, y2 = cy + bs / 2} end
+        bx = bx + bs + 4 * s
+    end
+    pbtn('plb-add', 'playlist_add', true)
+    pbtn('plb-del', 'delete_outline', sel ~= nil)
+    pbtn('plb-up', 'arrow_upward', sel ~= nil and sel > 1)
+    pbtn('plb-down', 'arrow_downward', sel ~= nil and sel < n)
+    pbtn('plb-sort', 'sort_by_alpha', n > 1)
+    pbtn('plb-clear', 'clear_all', n > 1)
 end
 
 -- ---------- панель изображения (F7) ----------
@@ -721,7 +743,7 @@ local function render()
             rect(a, px - 2 * s, py - 2 * s, px + tw + 2 * s, py + th + 2 * s, C.tip)
             thumb_at = {fr * dur, px, py}
         end
-    elseif st.hovered and tip_for(st.hovered) and not st.dragging and not st.menu and not st.hovered:find('^pl') then
+    elseif st.hovered and tip_for(st.hovered) and not st.dragging and not st.menu and not st.hovered:find('^pl:') and not st.hovered:find('^pldel:') then
         tip = tip_for(st.hovered)
         if st.hovered == 'time' and st.remaining then tip = 'Показать общее время' end
         for _, e in ipairs(elements) do
@@ -729,6 +751,7 @@ local function render()
                 tx = (e.x1 + e.x2) / 2
                 if e.id:find('^eq') then ty2 = e.y1 - 4 * s end
                 if e.id:find('^tb%-') then ty2 = e.y2 + 28 * s end
+                if e.id:find('^plb%-') then ty2 = e.y1 - 4 * s end
             end
         end
     end
@@ -795,6 +818,8 @@ local function on_left(t)
             local from, gap = st.pl_from, st.pl_gap
             if from and gap and gap ~= from - 1 and gap ~= from then
                 cmd('playlist-move', tostring(from - 1), tostring(gap))
+                -- выделение едет вместе с перетащенной строкой
+                st.pl_sel = gap < from and gap + 1 or gap
             end
             st.pressed, st.pl_from, st.pl_gap = nil, nil, nil
         end
@@ -804,9 +829,10 @@ local function on_left(t)
         st.pressed = nil
         if id and hit(st.mx, st.my) == id then
             if id:sub(1, 3) == 'pl:' then
-                cmd('playlist-play-index', tostring(tonumber(id:sub(4)) - 1))
+                -- как в GOM: клик выделяет строку, двойной клик запускает файл
+                st.pl_sel = tonumber(id:sub(4))
             elseif id:find('^pldel:') then
-                cmd('playlist-remove', tostring(tonumber(id:sub(7)) - 1))
+                actions.pl_remove(tonumber(id:sub(7)))
             elseif id:find('^eqval:') then
                 mp.set_property_number(id:sub(7), 0)
             elseif actions[id] then
@@ -919,10 +945,11 @@ local function toggle_playlist()
         local cur = (mp.get_property_number('playlist-pos', 0) or 0) + 1
         st.pl_scroll = math.max(0, cur - math.floor((st.pl_rows or 12) / 2))
         mp.add_forced_key_binding('ESC', 'classicbar-plesc', toggle_playlist)
-        -- Delete убирает из плейлиста строку под курсором (файл на диске не трогается)
+        -- Delete убирает из плейлиста выделенную строку, а если её нет — строку под курсором
+        -- (файл на диске не трогается)
         mp.add_forced_key_binding('DEL', 'classicbar-pldel', function()
-            local i = st.hovered and tonumber(st.hovered:match('^pl:(%d+)$') or st.hovered:match('^pldel:(%d+)$'))
-            if i then cmd('playlist-remove', tostring(i - 1)) end
+            local i = st.pl_sel or (st.hovered and tonumber(st.hovered:match('^pl:(%d+)$') or st.hovered:match('^pldel:(%d+)$')))
+            actions.pl_remove(i)
         end)
         if st.fs then st.visible = true end
     else
@@ -961,7 +988,11 @@ local function set_bindings(on)
     mp.set_property_bool('window-dragging', window_dragging and not on)
     if on then
         mp.add_forced_key_binding('MBTN_LEFT', 'classicbar-left', on_left, {complex = true})
-        mp.add_forced_key_binding('MBTN_LEFT_DBL', 'classicbar-dbl', function() end)
+        mp.add_forced_key_binding('MBTN_LEFT_DBL', 'classicbar-dbl', function()
+            -- двойной клик по строке плейлиста запускает файл
+            local i = st.hovered and tonumber(st.hovered:match('^pl:(%d+)$'))
+            if i then cmd('playlist-play-index', tostring(i - 1)) end
+        end)
         mp.add_forced_key_binding('WHEEL_UP', 'classicbar-wup', function() wheel(-1) end)
         mp.add_forced_key_binding('WHEEL_DOWN', 'classicbar-wdown', function() wheel(1) end)
     else
@@ -1045,7 +1076,10 @@ watch('osd-dimensions', nil, function(v)
 end)
 watch('user-data/uosc/menu/type', 'menu')
 watch('media-title', 'title')
-watch('playlist', 'playlist', function(v) st.playlist = v or {} end)
+watch('playlist', 'playlist', function(v)
+    st.playlist = v or {}
+    if st.pl_sel and st.pl_sel > #st.playlist then st.pl_sel = #st.playlist > 0 and #st.playlist or nil end
+end)
 for _, e in ipairs(EQ) do
     watch(e[1], nil, function(v) st.eq[e[1]] = v or 0 end)
 end
@@ -1108,9 +1142,138 @@ local function show_full_menu()
     cmd('context-menu')
 end
 
+-- своё системное меню (строка плейлиста, сортировка): подменяем menu-data так же, как разделы
+local function show_menu_items(items)
+    if not (mp.get_property_native('mouse-pos') or {}).hover then return end
+    local md = mp.get_property_native('menu-data')
+    if type(md) == 'table' and find_item(md, '&Звук') then full_menu = md end
+    mp.set_property_native('menu-data', items)
+    cmd('context-menu')
+end
+
+-- ---------- редактор плейлиста ----------
+local function pl_count() return #(mp.get_property_native('playlist') or {}) end
+
+local function pl_ensure_visible(i)
+    local rows = st.pl_rows or 10
+    if i <= (st.pl_scroll or 0) then st.pl_scroll = i - 1
+    elseif i > (st.pl_scroll or 0) + rows then st.pl_scroll = i - rows end
+end
+
+-- убрать строку i (с 1) из плейлиста; файл на диске не трогается
+function actions.pl_remove(i)
+    if not i or i < 1 or i > pl_count() then return end
+    cmd('playlist-remove', tostring(i - 1))
+    local n = pl_count()
+    if st.pl_sel then
+        if st.pl_sel > i then st.pl_sel = st.pl_sel - 1 end
+        if st.pl_sel > n then st.pl_sel = n > 0 and n or nil end
+    end
+    dirty = true
+end
+
+-- сдвинуть строку i на одну вверх (-1) или вниз (+1); выделение едет вместе с ней
+function actions.pl_move(i, d)
+    local n = pl_count()
+    if not i or (d < 0 and i <= 1) or (d > 0 and i >= n) then return end
+    -- playlist-move ставит запись на место записи с указанным номером (считая с 0)
+    cmd('playlist-move', tostring(i - 1), tostring(d < 0 and i - 2 or i + 1))
+    st.pl_sel = i + d
+    pl_ensure_visible(st.pl_sel)
+    dirty = true
+end
+
+-- сортировка по имени с учётом чисел: «Серия 2» раньше «Серия 10»
+local function natural_key(name)
+    return (name:lower():gsub('%d+', function(d) return string.rep('0', 12 - #d) .. d end))
+end
+mp.register_script_message('pl-sort', function(how)
+    local list = mp.get_property_native('playlist') or {}
+    local order = {}
+    for i, e in ipairs(list) do order[i] = {i = i, key = natural_key(basename(e.filename or ''))} end
+    table.sort(order, function(a, b)
+        if a.key == b.key then return a.i < b.i end
+        if how == 'desc' then return a.key > b.key end
+        return a.key < b.key
+    end)
+    -- переставляем записи по одной; cur — номера исходных записей в текущем порядке
+    local cur = {}
+    for i = 1, #list do cur[i] = i end
+    for t, want in ipairs(order) do
+        local j = t
+        while cur[j] ~= want.i do j = j + 1 end
+        if j ~= t then
+            cmd('playlist-move', tostring(j - 1), tostring(t - 1))
+            table.insert(cur, t, table.remove(cur, j))
+        end
+    end
+    st.pl_sel = nil
+    dirty = true
+end)
+
+actions['plb-add'] = function() open_dialog(true) end
+actions['plb-del'] = function() actions.pl_remove(st.pl_sel) end
+actions['plb-up'] = function() actions.pl_move(st.pl_sel, -1) end
+actions['plb-down'] = function() actions.pl_move(st.pl_sel, 1) end
+actions['plb-clear'] = function() cmd('playlist-clear'); st.pl_sel = nil; dirty = true end
+actions['plb-sort'] = function()
+    show_menu_items({
+        {title = 'По имени: &А → Я', cmd = 'script-message-to classicbar pl-sort asc'},
+        {title = 'По имени: &Я → А', cmd = 'script-message-to classicbar pl-sort desc'},
+        {type = 'separator'},
+        {title = '&Перемешать', cmd = 'playlist-shuffle'},
+    })
+end
+tips['plb-add'] = 'Добавить файлы'
+tips['plb-del'] = 'Убрать выделенное из плейлиста (Delete)'
+tips['plb-up'] = 'Переместить вверх'
+tips['plb-down'] = 'Переместить вниз'
+tips['plb-sort'] = 'Сортировка'
+tips['plb-clear'] = 'Очистить плейлист (кроме текущего файла)'
+
+-- команды меню строки: pl-cmd play|remove|up|down|explorer <номер с 1>
+mp.register_script_message('pl-cmd', function(what, i)
+    i = tonumber(i)
+    if not i then return end
+    if what == 'play' then cmd('playlist-play-index', tostring(i - 1))
+    elseif what == 'remove' then actions.pl_remove(i)
+    elseif what == 'up' then actions.pl_move(i, -1)
+    elseif what == 'down' then actions.pl_move(i, 1)
+    elseif what == 'explorer' then
+        local e = (mp.get_property_native('playlist') or {})[i]
+        if not e or e.filename:find('://') then return end
+        local path = mp.command_native({'normalize-path', e.filename}):gsub('/', '\\')
+        mp.command_native_async({name = 'subprocess', playback_only = false, args = {'explorer.exe', '/select,' .. path}}, function() end)
+    end
+end)
+
+-- правый клик по строке плейлиста — меню этой строки (и строка выделяется)
+local function show_row_menu(i)
+    st.pl_sel = i
+    dirty = true
+    local n = pl_count()
+    local e = (mp.get_property_native('playlist') or {})[i] or {}
+    local function item(title, what, disabled, shortcut)
+        return {title = title, cmd = 'script-message-to classicbar pl-cmd ' .. what .. ' ' .. i,
+            state = disabled and {'disabled'} or {}, shortcut = shortcut}
+    end
+    show_menu_items({
+        item('&Воспроизвести', 'play', false, 'двойной клик'),
+        item('&Убрать из плейлиста', 'remove', false, 'Del'),
+        {type = 'separator'},
+        item('В&верх', 'up', i <= 1),
+        item('В&низ', 'down', i >= n),
+        {type = 'separator'},
+        item('Показать в &Проводнике', 'explorer', not e.filename or e.filename:find('://') ~= nil),
+    })
+end
+
 -- правый клик: как у mpv, меню показывается при отпускании кнопки
 mp.add_key_binding(nil, 'context-menu', function(t)
-    if t.event == 'up' or t.event == 'press' then show_full_menu() end
+    if t.event == 'up' or t.event == 'press' then
+        local row = st.pl_open and st.hovered and tonumber(st.hovered:match('^pl:(%d+)$') or st.hovered:match('^pldel:(%d+)$'))
+        if row then show_row_menu(row) else show_full_menu() end
+    end
 end, {complex = true})
 actions.menu = show_full_menu
 
