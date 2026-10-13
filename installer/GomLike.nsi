@@ -1,7 +1,9 @@
 ﻿; GomLike-Setup: ставит плеер в выбранную папку, делает ярлыки и ассоциации файлов.
 ; Установка только для текущего пользователя, права администратора не нужны.
 
-Target amd64-unicode
+; 32-битный установщик: в NSIS для Windows нет 64-битных заготовок, а ставит он
+; всё равно 64-битный mpv (пишет только в HKCU и LOCALAPPDATA, перенаправления нет)
+Unicode true
 ManifestDPIAware true
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
