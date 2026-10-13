@@ -246,6 +246,23 @@ Function RunPlayer
     ; пока мы ещё на переднем плане, разрешаем плееру выйти вперёд
     System::Call 'user32::AllowSetForegroundWindow(i -1)'
     ExecShell "" "$INSTDIR\GomLike.exe" "" SW_SHOWNORMAL
+    ; только что скачанный GomLike.exe может запускаться долго (антивирус проверяет его
+    ; при первом запуске), и разрешение выше к тому времени пропадает. Поэтому ждём,
+    ; пока появится окно плеера (класс «mpv»), и выводим его вперёд сами, пока установщик
+    ; ещё на переднем плане. Ждём не дольше 15 секунд.
+    StrCpy $1 0
+    ${Do}
+        FindWindow $0 "mpv"
+        ${If} $0 <> 0
+            System::Call 'user32::IsWindowVisible(p r0) i .r2'
+            ${If} $2 <> 0
+                System::Call 'user32::SetForegroundWindow(p r0)'
+                ${ExitDo}
+            ${EndIf}
+        ${EndIf}
+        Sleep 100
+        IntOp $1 $1 + 1
+    ${LoopUntil} $1 >= 150
 FunctionEnd
 
 Function .onInstSuccess
