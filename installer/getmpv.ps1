@@ -30,8 +30,8 @@ try {
     $exe = Get-ChildItem $out -Recurse -Filter 'mpv.exe' | Select-Object -First 1
     if (-not $exe) { throw "mpv.exe not found in archive" }
 
-    # Only the player itself: no updater, no stock installer scripts
-    $skip = @('portable_config', 'installer', 'updater.bat', 'updater.ps1')
+    # Only the player itself: no updater, no stock installer or file association scripts
+    $skip = @('portable_config', 'installer', 'updater.bat', 'updater.ps1', 'mpv-register.bat', 'mpv-unregister.bat')
     $items = Get-ChildItem $exe.DirectoryName | Where-Object { $skip -notcontains $_.Name }
     foreach ($i in $items) { Copy-Item $i.FullName -Destination $Dest -Recurse -Force }
     $items | ForEach-Object { $_.Name } | Set-Content -Path (Join-Path $Dest 'gomlike-files.txt') -Encoding ASCII

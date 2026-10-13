@@ -39,8 +39,9 @@ BrandingText "${APP}"
 !define MUI_WELCOMEPAGE_TITLE "Установка ${APP}"
 !define MUI_WELCOMEPAGE_TEXT "Видеоплеер на движке mpv: без рекламы, без обновлений, с классической панелью управления.$\r$\n$\r$\nВо время установки нужен интернет: установщик скачает свежий mpv (около 35 МБ). Потом плеер в интернет не ходит.$\r$\n$\r$\nНажми «Далее»."
 !define MUI_DIRECTORYPAGE_TEXT_TOP "Выбери папку для плеера. Подойдёт любая папка, куда у тебя есть права на запись (Program Files не подойдёт: плеер хранит там настройки и позиции просмотра)."
-!define MUI_FINISHPAGE_RUN "$INSTDIR\mpv.exe"
+!define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_TEXT "Запустить ${APP}"
+!define MUI_FINISHPAGE_RUN_FUNCTION RunPlayer
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -183,6 +184,13 @@ Function RegisterProgId
     WriteRegStr HKCU "${REG}\Capabilities" "ApplicationDescription" "Видеоплеер без рекламы"
     WriteRegStr HKCU "${REG}\Capabilities" "ApplicationIcon" '"$INSTDIR\gomlike.ico",0'
     WriteRegStr HKCU "Software\RegisteredApplications" "${APP}" "${REG}\Capabilities"
+FunctionEnd
+
+Function RunPlayer
+    ; установщик сейчас закроется, и Windows оставила бы окно плеера позади других;
+    ; пока мы ещё на переднем плане, разрешаем плееру выйти вперёд
+    System::Call 'user32::AllowSetForegroundWindow(i -1)'
+    ExecShell "" "$INSTDIR\mpv.exe" "" SW_SHOWNORMAL
 FunctionEnd
 
 Function .onInstSuccess
