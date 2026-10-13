@@ -195,17 +195,31 @@ local function image_reset()
 end
 
 -- горячие клавиши из input.conf: script-message-to classicbar adjust|zoom|pan|view-reset
+-- при зажатой клавише mpv повторяет её 40 раз в секунду, это слишком быстро:
+-- пропускаем повторы чаще заданной частоты
+local last_rep = {}
+local function too_soon(kind, per_sec)
+    local t = mp.get_time()
+    if last_rep[kind] and t - last_rep[kind] < 1 / per_sec then return true end
+    last_rep[kind] = t
+    return false
+end
+
 mp.register_script_message('adjust', function(prop, d)
-    if not EQ_NAMES[prop] then return end
+    if not EQ_NAMES[prop] or too_soon('adjust', 25) then return end
     cmd('no-osd', 'add', prop, d)
     mp.osd_message(EQ_NAMES[prop] .. ': ' .. signed(mp.get_property_number(prop, 0)))
 end)
+-- масштаб от 25% до 800%; при зажатой клавише — примерно вдвое за секунду
 mp.register_script_message('zoom', function(d)
-    cmd('no-osd', 'add', 'video-zoom', d)
-    mp.osd_message('Масштаб: ' .. zoom_pct(mp.get_property_number('video-zoom', 0)))
+    if too_soon('zoom', 10) then return end
+    local z = math.max(-2, math.min(mp.get_property_number('video-zoom', 0) + tonumber(d), 3))
+    mp.set_property_number('video-zoom', z)
+    mp.osd_message('Масштаб: ' .. zoom_pct(z))
 end)
 -- pan x|y <шаг> или pan xy <шаг по x> <шаг по y> (по диагонали)
 mp.register_script_message('pan', function(axis, d, d2)
+    if too_soon('pan', 20) then return end
     if axis == 'xy' then
         cmd('no-osd', 'add', 'video-pan-x', d)
         cmd('no-osd', 'add', 'video-pan-y', d2)
@@ -397,6 +411,45 @@ local function draw_eq(a)
     elements[#elements + 1] = {id = 'eqreset', x1 = lx, y1 = ly - 11 * s, x2 = lx + lw, y2 = ly + 11 * s}
 end
 
+-- ---------- верхняя полоса в полноэкранном режиме (как в GOM) ----------
+-- появляется, когда мышь у верхнего края: название и кнопки окна
+local function topbar_h() return 36 * st.scale end
+
+actions['tb-fs'] = function() mp.set_property_bool('fullscreen', false) end
+actions['tb-min'] = function() mp.set_property_bool('window-minimized', true) end
+actions['tb-max'] = function()
+    mp.set_property_bool('fullscreen', false)
+    mp.set_property_bool('window-maximized', true)
+end
+actions['tb-close'] = function() cmd('quit') end
+tips['tb-fs'] = 'Выйти из полноэкранного режима (Esc)'
+tips['tb-min'] = 'Свернуть'
+tips['tb-max'] = 'Развернуть в окно'
+tips['tb-close'] = 'Закрыть'
+
+local function draw_topbar(a)
+    if not (st.fs and st.top) then return end
+    local s, w = st.scale, st.w
+    local th, bw = topbar_h(), 46 * s
+    rect(a, 0, 0, w, th, C.panel)
+    local bx = w - 4 * bw
+    local function tbtn(id, name, size, hover_col)
+        local hov = st.hovered == id
+        if hov then rect(a, bx, 0, bx + bw, th, hover_col or C.hover) end
+        icon(a, bx + bw / 2, th / 2, name, size * s, hov and C.icon_hi or C.icon)
+        elements[#elements + 1] = {id = id, x1 = bx, y1 = 0, x2 = bx + bw, y2 = th}
+        bx = bx + bw
+    end
+    tbtn('tb-fs', 'fullscreen_exit', 20)
+    tbtn('tb-min', 'remove', 18)
+    tbtn('tb-max', 'crop_square', 16)
+    tbtn('tb-close', 'close', 20, bgr('E81123'))
+    local title = st.title or ''
+    if title ~= '' then
+        text(a, 14 * s, th / 2, esc(fit(title, w - 4 * bw - 28 * s, 13 * s)), 13 * s, C.text, 4)
+    end
+end
+
 local function render()
     dirty = false
     local w, h, s = st.w, st.h, st.scale
@@ -412,6 +465,7 @@ local function render()
     end
 
     if not panel_shown() then
+        draw_topbar(a)
         draw_eq(a)
         draw_playlist(a)
         ov.res_x, ov.res_y, ov.data = w, h, table.concat(a, '\n')
@@ -522,6 +576,7 @@ local function render()
         elements[#elements + 1] = {id = 'time', x1 = x, y1 = cy - bs / 2, x2 = x + time_w - 10 * s, y2 = cy + bs / 2}
     end
 
+    draw_topbar(a)
     draw_eq(a)
     draw_playlist(a)
 
@@ -537,6 +592,7 @@ local function render()
             if e.id == st.hovered then
                 tx = (e.x1 + e.x2) / 2
                 if e.id:find('^eq') then ty2 = e.y1 - 4 * s end
+                if e.id:find('^tb%-') then ty2 = e.y2 + 28 * s end
             end
         end
     end
@@ -614,6 +670,7 @@ local function over_ui(x, y)
     if st.idle and hit(x, y) == 'open' then return true end
     if st.pl_open and in_box(pl_box, x, y) then return true end
     if st.eq_open and in_box(eq_box, x, y) then return true end
+    if st.fs and st.top and y <= topbar_h() then return true end
     return panel_shown() and y >= panel_top - 2
 end
 
@@ -663,9 +720,14 @@ actions.image = toggle_eq
 actions.eqclose = toggle_eq
 mp.add_key_binding(nil, 'image', toggle_eq)
 
+-- над панелями окно нельзя таскать мышью: иначе mpv начинает перетаскивать окно,
+-- Windows сразу присылает «кнопка отпущена», и ползунки не тянутся
+local window_dragging = mp.get_property_bool('window-dragging', true)
+
 local function set_bindings(on)
     if on == st.bound then return end
     st.bound = on
+    mp.set_property_bool('window-dragging', window_dragging and not on)
     if on then
         mp.add_forced_key_binding('MBTN_LEFT', 'classicbar-left', on_left, {complex = true})
         mp.add_forced_key_binding('MBTN_LEFT_DBL', 'classicbar-dbl', function() end)
@@ -690,6 +752,8 @@ mp.observe_property('mouse-pos', 'native', function(_, m)
     if not m then return end
     local moved = m.x ~= st.mx or m.y ~= st.my
     st.mx, st.my, st.inside = m.x, m.y, m.hover
+    local top = st.fs and m.hover and m.y <= topbar_h() or false
+    if top ~= st.top then st.top = top; dirty = true end
     if moved then show_panel() end
     if st.dragging == 'seek' then seek_to(st.mx, false)
     elseif st.dragging == 'vol' then vol_to(st.mx)
@@ -702,8 +766,10 @@ end)
 hide_timer = mp.add_timeout(o.hide_timeout, function()
     if st.fs and not st.dragging and not st.pl_open and not st.eq_open and not (st.inside and st.my >= panel_top) then
         st.visible = false
-        st.hovered = nil
-        set_bindings(false)
+        -- мышь может стоять на верхней полосе: её кнопки должны и дальше нажиматься
+        local over = st.inside and over_ui(st.mx, st.my)
+        st.hovered = over and hit(st.mx, st.my) or nil
+        set_bindings(over)
         dirty = true
     elseif st.fs then
         hide_timer:resume()
@@ -731,6 +797,7 @@ watch('osd-dimensions', nil, function(v)
     if v then st.w, st.h = v.w, v.h end
 end)
 watch('user-data/uosc/menu/type', 'menu')
+watch('media-title', 'title')
 watch('playlist', 'playlist', function(v) st.playlist = v or {} end)
 for _, e in ipairs(EQ) do
     watch(e[1], nil, function(v) st.eq[e[1]] = v or 0 end)
