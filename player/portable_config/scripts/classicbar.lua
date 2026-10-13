@@ -357,18 +357,37 @@ local function draw_playlist(a)
     st.pl_rows = rows
     local maxscroll = math.max(0, n - rows)
     st.pl_scroll = math.max(0, math.min(st.pl_scroll or 0, maxscroll))
+    -- для перетаскивания: где строки и сколько их
+    st.pl_layout = {top = top, rh = rh, n = n, bottom = top + rows * rh}
+    local drag = st.dragging == 'pl'
     for i = st.pl_scroll + 1, math.min(n, st.pl_scroll + rows) do
         local e = list[i]
         local ry = top + (i - st.pl_scroll - 1) * rh
-        local id = 'pl:' .. i
+        local id, del = 'pl:' .. i, 'pldel:' .. i
         local cur = e.current or e.playing
-        if st.hovered == id then rect(a, x1 + 1 * s, ry, x2, ry + rh, C.hover) end
+        local row_hovered = not drag and (st.hovered == id or st.hovered == del)
+        if row_hovered or (drag and st.pl_from == i) then rect(a, x1 + 1 * s, ry, x2, ry + rh, C.hover) end
         text(a, x1 + 34 * s, ry + rh / 2, tostring(i), 12 * s, C.dim, 6)
         if cur then icon(a, x1 + 48 * s, ry + rh / 2, 'play_arrow', 16 * s, C.accent) end
         local nx = x1 + 60 * s
         local name = e.title or strip_ext(basename(e.filename or ''))
-        text(a, nx, ry + rh / 2, esc(fit(name, x2 - nx - 14 * s, 13 * s)), 13 * s, cur and C.accent or C.text, 4)
+        local name_w = x2 - nx - (row_hovered and 40 or 14) * s
+        text(a, nx, ry + rh / 2, esc(fit(name, name_w, 13 * s)), 13 * s, cur and C.accent or C.text, 4)
+        -- крестик «убрать из плейлиста» у строки под курсором; раньше строки, чтобы hit() нашёл его первым
+        if row_hovered then
+            local dx = x2 - 10 * s - 22 * s
+            if st.hovered == del then rrect(a, dx, ry + 3 * s, dx + 22 * s, ry + rh - 3 * s, 4 * s, C.sep) end
+            icon(a, dx + 11 * s, ry + rh / 2, 'close', 16 * s, st.hovered == del and C.icon_hi or C.dim)
+            elements[#elements + 1] = {id = del, x1 = dx, y1 = ry + 3 * s, x2 = dx + 22 * s, y2 = ry + rh - 3 * s}
+        end
         elements[#elements + 1] = {id = id, x1 = x1 + 1 * s, y1 = ry, x2 = x2, y2 = ry + rh}
+    end
+    -- куда встанет перетаскиваемая строка
+    if drag and st.pl_gap then
+        local gy = top + (st.pl_gap - st.pl_scroll) * rh
+        if gy >= top - 1 and gy <= top + rows * rh + 1 then
+            rect(a, x1 + 8 * s, gy - 1 * s, x2 - 8 * s, gy + 1 * s, C.accent)
+        end
     end
     if maxscroll > 0 then
         local th = math.max(20 * s, (y2 - top) * rows / n)
@@ -755,10 +774,22 @@ local function on_left(t)
         if id == 'seek' then st.dragging = 'seek'; seek_to(st.mx, false)
         elseif id == 'vol' then st.dragging = 'vol'; vol_to(st.mx)
         elseif id and id:find('^eq:') then st.dragging = id; eq_to(id, st.mx)
-        else st.pressed = id end
+        else
+            st.pressed = id
+            -- строку плейлиста можно потащить: перетаскивание начнётся, когда мышь сдвинется
+            if id and id:find('^pl:') then st.pl_press_y = st.my end
+        end
         dirty = true
     elseif t.event == 'up' then
         if st.dragging == 'seek' then seek_to(st.mx, true) end
+        if st.dragging == 'pl' then
+            -- playlist-move ставит запись на место записи с номером gap (считая с 0)
+            local from, gap = st.pl_from, st.pl_gap
+            if from and gap and gap ~= from - 1 and gap ~= from then
+                cmd('playlist-move', tostring(from - 1), tostring(gap))
+            end
+            st.pressed, st.pl_from, st.pl_gap = nil, nil, nil
+        end
         st.dragging = nil
         -- кнопки срабатывают на отпускание, чтобы открытые меню не закрывались тем же кликом
         local id = st.pressed
@@ -766,6 +797,8 @@ local function on_left(t)
         if id and hit(st.mx, st.my) == id then
             if id:sub(1, 3) == 'pl:' then
                 cmd('playlist-play-index', tostring(tonumber(id:sub(4)) - 1))
+            elseif id:find('^pldel:') then
+                cmd('playlist-remove', tostring(tonumber(id:sub(7)) - 1))
             elseif id:find('^eqval:') then
                 mp.set_property_number(id:sub(7), 0)
             elseif actions[id] then
@@ -804,9 +837,15 @@ local function toggle_playlist()
         local cur = (mp.get_property_number('playlist-pos', 0) or 0) + 1
         st.pl_scroll = math.max(0, cur - math.floor((st.pl_rows or 12) / 2))
         mp.add_forced_key_binding('ESC', 'classicbar-plesc', toggle_playlist)
+        -- Delete убирает из плейлиста строку под курсором (файл на диске не трогается)
+        mp.add_forced_key_binding('DEL', 'classicbar-pldel', function()
+            local i = st.hovered and tonumber(st.hovered:match('^pl:(%d+)$') or st.hovered:match('^pldel:(%d+)$'))
+            if i then cmd('playlist-remove', tostring(i - 1)) end
+        end)
         if st.fs then st.visible = true end
     else
         mp.remove_key_binding('classicbar-plesc')
+        mp.remove_key_binding('classicbar-pldel')
         st.hovered = nil
     end
     dirty = true
@@ -868,6 +907,20 @@ mp.observe_property('mouse-pos', 'native', function(_, m)
     if st.dragging == 'seek' then seek_to(st.mx, false)
     elseif st.dragging == 'vol' then vol_to(st.mx)
     elseif st.dragging and st.dragging:find('^eq:') then eq_to(st.dragging, st.mx) end
+    -- перетаскивание строки плейлиста
+    if not st.dragging and st.pressed and st.pressed:find('^pl:') and st.pl_press_y
+        and math.abs(st.my - st.pl_press_y) > 6 * st.scale then
+        st.dragging, st.pl_from = 'pl', tonumber(st.pressed:sub(4))
+    end
+    if st.dragging == 'pl' and st.pl_layout then
+        local L = st.pl_layout
+        -- у верхнего и нижнего края список прокручивается
+        if st.my < L.top then st.pl_scroll = math.max(0, (st.pl_scroll or 0) - 1)
+        elseif st.my > L.bottom then st.pl_scroll = (st.pl_scroll or 0) + 1 end
+        local gap = math.floor((st.my - L.top) / L.rh + 0.5) + (st.pl_scroll or 0)
+        st.pl_gap = math.max(0, math.min(gap, L.n))
+        dirty = true
+    end
     local id = m.hover and over_ui(m.x, m.y) and hit(m.x, m.y) or nil
     if id ~= st.hovered then st.hovered = id; dirty = true end
     -- над полосой перемотки время в подсказке и превью следуют за мышью и на паузе
