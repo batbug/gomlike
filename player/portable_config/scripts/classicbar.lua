@@ -167,7 +167,9 @@ local actions = {
     play = function() cmd('cycle', 'pause') end,
     stop = function() mp.set_property_bool('pause', true); cmd('seek', '0', 'absolute') end,
     prev = uosc('prev'), next = uosc('next'), open = open_dialog,
-    subs = uosc('subtitles'), audio = uosc('audio'), menu = uosc('menu'),
+    subs = uosc('subtitles'), audio = uosc('audio'),
+    -- то же системное меню Windows, что и по правому клику (пункты в menu.conf)
+    menu = function() cmd('script-binding', 'select/context-menu') end,
     mute = function() cmd('cycle', 'mute') end,
     fullscreen = function() cmd('cycle', 'fullscreen') end,
     time = function() st.remaining = not st.remaining; dirty = true end,
