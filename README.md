@@ -15,6 +15,7 @@
   - `GomLike.nsi` — установка в выбранную папку для текущего пользователя, ярлыки, ассоциации файлов, удаление
   - `getmpv.ps1` — скачивает свежую сборку mpv ([shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake)): во время установки или при сборке офлайн-версии
 - `tools/build.ps1` (Windows), `tools/build.sh` (Linux) — сборка установщиков
+- `tools/vtscan.ps1` — проверка собранных установщиков на VirusTotal
 
 ## Сборка
 
@@ -38,3 +39,14 @@ tools/build.sh
 ```
 
 Для проверки установщика без скачивания mpv: `tools\build.ps1 -Test` (или `makensis -DTEST installer/GomLike.nsi` после подготовки `installer/payload`, см. build.sh) — соберёт `test-setup.exe` с заглушкой вместо mpv.
+
+## Проверка на VirusTotal
+
+Нужен API-ключ VirusTotal (https://www.virustotal.com/gui/my-apikey) в переменной `VT_API_KEY`:
+
+```
+setx VT_API_KEY "<ключ>"
+powershell -ExecutionPolicy Bypass -File tools\vtscan.ps1
+```
+
+Без параметров проверяет оба собранных установщика, занимает несколько минут. Неподписанные установщики NSIS обычно ловят несколько эвристических срабатываний («Malicious», «Unsafe», «PossibleThreat»), это ожидаемо.
