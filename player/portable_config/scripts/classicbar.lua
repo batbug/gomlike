@@ -129,12 +129,14 @@ local function open_dialog()
         '  if (fg != me) AttachThreadInput(fg, me, true);',
         '  SetForegroundWindow(mine);',
         '  if (fg != me) AttachThreadInput(fg, me, false);',
-        '} }',
+        '}',
+        'public static void Back(IntPtr owner) { if (owner != IntPtr.Zero) SetForegroundWindow(owner); }',
+        '}',
     }, ' ')
     local ps = table.concat({
         "[Console]::OutputEncoding = [Text.Encoding]::UTF8",
         "Add-Type -AssemblyName System.Windows.Forms",
-        "$dll = Join-Path $env:TEMP 'gomlike-dialog-1.dll'",
+        "$dll = Join-Path $env:TEMP 'gomlike-dialog-2.dll'",
         "if (-not (Test-Path $dll)) { Add-Type -OutputAssembly $dll -TypeDefinition ('" .. fg .. "' -replace 'QQ', [char]34) }",
         "Add-Type -Path $dll",
         "$o = New-Object System.Windows.Forms.Form",
@@ -147,7 +149,7 @@ local function open_dialog()
         "$d.Filter = 'Видео и аудио|" .. pat .. "|Все файлы|*.*'",
         "$d.InitialDirectory = '" .. dir:gsub("'", "''") .. "'",
         "if ($d.ShowDialog($o) -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileNames }",
-        "$o.Close()",
+        "[GomLikeFg]::Back([IntPtr][int64]" .. hwnd .. "); $o.Close()",
     }, '\n')
     mp.command_native_async({
         name = 'subprocess', playback_only = false, capture_stdout = true,
