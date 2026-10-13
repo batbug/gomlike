@@ -204,8 +204,14 @@ mp.register_script_message('zoom', function(d)
     cmd('no-osd', 'add', 'video-zoom', d)
     mp.osd_message('Масштаб: ' .. zoom_pct(mp.get_property_number('video-zoom', 0)))
 end)
-mp.register_script_message('pan', function(axis, d)
-    cmd('no-osd', 'add', 'video-pan-' .. axis, d)
+-- pan x|y <шаг> или pan xy <шаг по x> <шаг по y> (по диагонали)
+mp.register_script_message('pan', function(axis, d, d2)
+    if axis == 'xy' then
+        cmd('no-osd', 'add', 'video-pan-x', d)
+        cmd('no-osd', 'add', 'video-pan-y', d2)
+    else
+        cmd('no-osd', 'add', 'video-pan-' .. axis, d)
+    end
 end)
 mp.register_script_message('view-reset', function()
     view_reset()
