@@ -136,15 +136,13 @@ local FG = table.concat({
 }, ' ')
 
 -- dialog: строки PowerShell, которые создают диалог $d (владелец — $o) и выводят
--- выбранные пути по одному на строку; done(paths) вызывается, если что-то выбрано;
--- stdin — данные для процесса (содержимое плейлиста при сохранении)
-local function run_dialog(dialog, done, stdin)
+-- выбранные пути по одному на строку; done(paths) вызывается, если что-то выбрано
+local function run_dialog(dialog, done)
     if dialog_busy then return end
     dialog_busy = true
     local hwnd = string.format('%d', mp.get_property_number('window-id', 0) or 0)
     local ps = table.concat({
         "[Console]::OutputEncoding = [Text.Encoding]::UTF8",
-        "[Console]::InputEncoding = [Text.Encoding]::UTF8",
         "Add-Type -AssemblyName System.Windows.Forms",
         "$dll = Join-Path $env:TEMP 'gomlike-dialog-2.dll'",
         "if (-not (Test-Path $dll)) { Add-Type -OutputAssembly $dll -TypeDefinition ('" .. FG .. "' -replace 'QQ', [char]34) }",
@@ -157,7 +155,7 @@ local function run_dialog(dialog, done, stdin)
         "[GomLikeFg]::Back([IntPtr][int64]" .. hwnd .. "); $o.Close()",
     }, '\n')
     mp.command_native_async({
-        name = 'subprocess', playback_only = false, capture_stdout = true, capture_stderr = true, stdin_data = stdin,
+        name = 'subprocess', playback_only = false, capture_stdout = true, capture_stderr = true,
         args = {'powershell', '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-Command', ps},
     }, function(ok, res)
         dialog_busy = false
@@ -909,9 +907,40 @@ if is_windows then
             void *MonitorFromWindow(void *hwnd, unsigned long flags);
             int GetMonitorInfoW(void *monitor, GL_MONITORINFO *info);
         ]])
+        -- запись файла с путём в Юникоде (сохранение плейлиста): у Lua-io пути только в ANSI
+        pcall(ffi.cdef, [[
+            int MultiByteToWideChar(unsigned int cp, unsigned long flags, const char *str, int len, uint16_t *wstr, int wlen);
+            void *CreateFileW(const uint16_t *name, unsigned long access, unsigned long share, void *sa,
+                              unsigned long disposition, unsigned long flags, void *tmpl);
+            int WriteFile(void *file, const void *buf, unsigned long len, unsigned long *written, void *overlapped);
+            int CloseHandle(void *handle);
+        ]])
         local ok2, user32 = pcall(ffi.load, 'user32')
-        if ok2 then win32 = {ffi = ffi, user32 = user32} end
+        local ok3, kernel32 = pcall(ffi.load, 'kernel32')
+        if ok2 and ok3 then win32 = {ffi = ffi, user32 = user32, kernel32 = kernel32} end
     end
+end
+
+-- записать текст (UTF-8) в файл, путь тоже в UTF-8; true, если получилось
+local function write_file(path, text)
+    if not win32 then
+        local f = io.open(path, 'wb')
+        if not f then return false end
+        f:write(text); f:close()
+        return true
+    end
+    local ffi, k = win32.ffi, win32.kernel32
+    local n = k.MultiByteToWideChar(65001, 0, path, -1, nil, 0)
+    if n <= 0 then return false end
+    local wpath = ffi.new('uint16_t[?]', n)
+    k.MultiByteToWideChar(65001, 0, path, -1, wpath, n)
+    -- GENERIC_WRITE, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL
+    local h = k.CreateFileW(wpath, 0x40000000, 0, nil, 2, 0x80, nil)
+    if ffi.cast('intptr_t', h) == -1 then return false end
+    local written = ffi.new('unsigned long[1]')
+    local ok = k.WriteFile(h, text, #text, written, nil) ~= 0 and written[0] == #text
+    k.CloseHandle(h)
+    return ok
 end
 
 local function window_handle()
@@ -1250,9 +1279,9 @@ actions['plb-sort'] = function()
         {title = '&Перемешать', cmd = 'playlist-shuffle'},
     })
 end
--- сохранить плейлист в .m3u8 (UTF-8, полные пути) через окно Windows «Сохранить как»;
--- файл пишет PowerShell (содержимое приходит ему на stdin) — так пути с русскими буквами
--- работают надёжно
+-- сохранить плейлист в .m3u8 (UTF-8, полные пути) через окно Windows «Сохранить как».
+-- PowerShell только спрашивает путь, файл пишет сам скрипт через Windows API (write_file);
+-- передать содержимое PowerShell на stdin нельзя — на Windows mpv его не отдаёт
 actions['plb-save'] = function()
     local list = mp.get_property_native('playlist') or {}
     if #list == 0 or not is_windows then return end
@@ -1265,19 +1294,19 @@ actions['plb-save'] = function()
     end
     local dir = current_dir()
     local name = (dir ~= '' and basename(dir) or 'Плейлист') .. '.m3u8'
+    local text = table.concat(lines, '\r\n') .. '\r\n'
     run_dialog(table.concat({
-        "$data = [Console]::In.ReadToEnd()",
         "$d = New-Object System.Windows.Forms.SaveFileDialog",
         "$d.Title = 'Сохранить плейлист'",
         "$d.Filter = 'Плейлист M3U8|*.m3u8|Плейлист M3U|*.m3u'",
         "$d.DefaultExt = 'm3u8'; $d.AddExtension = $true; $d.OverwritePrompt = $true",
         "$d.FileName = " .. ps_quote(name),
         "$d.InitialDirectory = " .. ps_quote(dir),
-        "if ($d.ShowDialog($o) -eq [System.Windows.Forms.DialogResult]::OK) {",
-        "    [IO.File]::WriteAllText($d.FileName, $data, (New-Object Text.UTF8Encoding $false)); $d.FileName }",
+        "if ($d.ShowDialog($o) -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileName }",
     }, '\n'), function(paths)
-        mp.osd_message('Плейлист сохранён: ' .. basename(paths[1]))
-    end, table.concat(lines, '\r\n') .. '\r\n')
+        mp.osd_message(write_file(paths[1], text) and ('Плейлист сохранён: ' .. basename(paths[1]))
+            or ('Не удалось сохранить плейлист: ' .. paths[1]))
+    end)
 end
 
 -- открыть сохранённый плейлист (m3u, m3u8, pls) вместо текущего
