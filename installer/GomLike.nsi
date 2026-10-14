@@ -19,6 +19,7 @@ SetCompressor /SOLID lzma
 !define UNREG "Software\Microsoft\Windows\CurrentVersion\Uninstall\GomLike"
 !define VIDEO "mkv mp4 avi mov wmv flv webm m4v mpg mpeg ts m2ts mts vob 3gp ogv divx rm rmvb asf f4v"
 !define AUDIO "mp3 flac m4a aac ogg opus wav wma ape"
+!define PLAYLIST "m3u m3u8 pls"
 
 Name "${APP}"
 Caption "Установка ${APP}"
@@ -227,6 +228,10 @@ SectionGroup /e "Сделать ${APP} плеером по умолчанию" S
         Call RegisterProgId
         !insertmacro AssocList "${AUDIO}"
     SectionEnd
+    Section "для плейлистов (m3u, m3u8, pls)" SecPlaylist
+        Call RegisterProgId
+        !insertmacro AssocList "${PLAYLIST}"
+    SectionEnd
 SectionGroupEnd
 
 Function RegisterProgId
@@ -273,7 +278,7 @@ FunctionEnd
 ; ---------- удаление ----------
 Section "Uninstall"
     ; ассоциации
-    Push "${VIDEO} ${AUDIO} "
+    Push "${VIDEO} ${AUDIO} ${PLAYLIST} "
     Call un.UnassocExts
     DeleteRegKey HKCU "Software\Classes\${PROGID}"
     DeleteRegValue HKCU "Software\RegisteredApplications" "${APP}"

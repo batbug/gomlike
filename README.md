@@ -40,7 +40,7 @@
   - `scripts/thumbfast.lua`, `script-opts/thumbfast.conf` — [thumbfast](https://github.com/po5/thumbfast) (сторонний проект, MPL-2.0, без изменений, коммит `0f711de313`): превью кадра над полосой перемотки; фоновый процесс для превью запускает тот же `GomLike.exe`
 - `player/README.txt` — инструкция для пользователя (кладётся в папку установки)
 - `installer/` — установщик на NSIS:
-  - `GomLike.nsi` — установка в выбранную папку для текущего пользователя, ярлыки, ассоциации файлов, удаление
+  - `GomLike.nsi` — установка в выбранную папку для текущего пользователя, ярлыки, ассоциации файлов (видео, музыка, плейлисты m3u/m3u8/pls), удаление
   - `getmpv.ps1` — скачивает свежую сборку mpv ([shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake)): во время установки или при сборке офлайн-версии; рядом с mpv кладёт `mpv-source.txt` с точной версией и ссылками на исходники
   - `licenses/mpv/` — лицензия mpv (GPLv2+), ставится вместе с плеером
 - `tools/build.ps1` (Windows), `tools/build.sh` (Linux) — сборка установщиков

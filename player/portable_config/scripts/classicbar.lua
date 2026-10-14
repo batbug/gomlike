@@ -93,75 +93,97 @@ end
 local function cmd(...) mp.commandv(...) end
 local function uosc(name) return function() cmd('script-binding', 'uosc/' .. name) end end
 
--- ---------- окно выбора файла (обычное окно Windows) ----------
+-- ---------- окна Windows «Открыть» и «Сохранить» ----------
 local is_windows = package.config:sub(1, 1) == '\\'
 local dialog_busy = false
 
 local EXTS = 'mkv;mp4;avi;mov;wmv;flv;webm;m4v;mpg;mpeg;ts;m2ts;mts;vob;3gp;ogv;divx;rm;rmvb;asf;f4v;' ..
     'mp3;flac;m4a;aac;ogg;opus;wav;wma;ape'
+local PLAYLIST_EXTS = 'm3u;m3u8;pls'
+local function patterns(exts) return '*.' .. exts:gsub(';', ';*.') end
+local function ps_quote(s) return "'" .. s:gsub("'", "''") .. "'" end
 
--- append: добавить выбранные файлы в конец плейлиста (кнопка «Добавить» в плейлисте)
-local function open_dialog(append)
-    if not is_windows then cmd('script-binding', 'uosc/open-file'); return end
+local function current_dir()
+    local path = mp.get_property('path')
+    if path and not path:find('://') then return path:match('^(.*)[\\/]') or '' end
+    return ''
+end
+
+-- Окна открывает отдельный процесс PowerShell, а Windows не пускает фоновый процесс
+-- поверх активного окна. Поэтому скрытая форма-владелец диалога становится «дочерней»
+-- для окна плеера (диалог всегда над ним) и забирает фокус через AttachThreadInput,
+-- а после закрытия возвращает фокус плееру. Код на C# компилируется один раз в %TEMP%.
+-- Двойных кавычек в -Command нет: Windows PowerShell их портит, QQ заменяется на кавычку
+-- уже внутри PowerShell.
+local FG = table.concat({
+    'using System; using System.Runtime.InteropServices;',
+    'public static class GomLikeFg {',
+    '[DllImport(QQuser32.dllQQ)] static extern IntPtr GetForegroundWindow();',
+    '[DllImport(QQuser32.dllQQ)] static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr p);',
+    '[DllImport(QQkernel32.dllQQ)] static extern uint GetCurrentThreadId();',
+    '[DllImport(QQuser32.dllQQ)] static extern bool AttachThreadInput(uint a, uint b, bool attach);',
+    '[DllImport(QQuser32.dllQQ)] static extern bool SetForegroundWindow(IntPtr h);',
+    '[DllImport(QQuser32.dllQQ)] static extern IntPtr SetWindowLongPtr(IntPtr h, int i, IntPtr v);',
+    'public static void Take(IntPtr mine, IntPtr owner) {',
+    '  if (owner != IntPtr.Zero) SetWindowLongPtr(mine, -8, owner);',
+    '  uint fg = GetWindowThreadProcessId(GetForegroundWindow(), IntPtr.Zero), me = GetCurrentThreadId();',
+    '  if (fg != me) AttachThreadInput(fg, me, true);',
+    '  SetForegroundWindow(mine);',
+    '  if (fg != me) AttachThreadInput(fg, me, false);',
+    '}',
+    'public static void Back(IntPtr owner) { if (owner != IntPtr.Zero) SetForegroundWindow(owner); }',
+    '}',
+}, ' ')
+
+-- dialog: строки PowerShell, которые создают диалог $d (владелец — $o) и выводят
+-- выбранные пути по одному на строку; done(paths) вызывается, если что-то выбрано;
+-- stdin — данные для процесса (содержимое плейлиста при сохранении)
+local function run_dialog(dialog, done, stdin)
     if dialog_busy then return end
     dialog_busy = true
-    local dir = ''
-    local path = mp.get_property('path')
-    if path and not path:find('://') then dir = path:match('^(.*)[\\/]') or '' end
-    local pat = '*.' .. EXTS:gsub(';', ';*.')
-    -- Окно открывает отдельный процесс PowerShell, а Windows не пускает фоновый процесс
-    -- поверх активного окна. Поэтому скрытая форма-владелец диалога становится «дочерней»
-    -- для окна плеера (диалог всегда над ним) и забирает фокус через AttachThreadInput.
-    -- Код на C# компилируется один раз в %TEMP%. Двойных кавычек в -Command нет:
-    -- Windows PowerShell их портит, QQ заменяется на кавычку уже внутри PowerShell.
     local hwnd = string.format('%d', mp.get_property_number('window-id', 0) or 0)
-    local fg = table.concat({
-        'using System; using System.Runtime.InteropServices;',
-        'public static class GomLikeFg {',
-        '[DllImport(QQuser32.dllQQ)] static extern IntPtr GetForegroundWindow();',
-        '[DllImport(QQuser32.dllQQ)] static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr p);',
-        '[DllImport(QQkernel32.dllQQ)] static extern uint GetCurrentThreadId();',
-        '[DllImport(QQuser32.dllQQ)] static extern bool AttachThreadInput(uint a, uint b, bool attach);',
-        '[DllImport(QQuser32.dllQQ)] static extern bool SetForegroundWindow(IntPtr h);',
-        '[DllImport(QQuser32.dllQQ)] static extern IntPtr SetWindowLongPtr(IntPtr h, int i, IntPtr v);',
-        'public static void Take(IntPtr mine, IntPtr owner) {',
-        '  if (owner != IntPtr.Zero) SetWindowLongPtr(mine, -8, owner);',
-        '  uint fg = GetWindowThreadProcessId(GetForegroundWindow(), IntPtr.Zero), me = GetCurrentThreadId();',
-        '  if (fg != me) AttachThreadInput(fg, me, true);',
-        '  SetForegroundWindow(mine);',
-        '  if (fg != me) AttachThreadInput(fg, me, false);',
-        '}',
-        'public static void Back(IntPtr owner) { if (owner != IntPtr.Zero) SetForegroundWindow(owner); }',
-        '}',
-    }, ' ')
     local ps = table.concat({
         "[Console]::OutputEncoding = [Text.Encoding]::UTF8",
+        "[Console]::InputEncoding = [Text.Encoding]::UTF8",
         "Add-Type -AssemblyName System.Windows.Forms",
         "$dll = Join-Path $env:TEMP 'gomlike-dialog-2.dll'",
-        "if (-not (Test-Path $dll)) { Add-Type -OutputAssembly $dll -TypeDefinition ('" .. fg .. "' -replace 'QQ', [char]34) }",
+        "if (-not (Test-Path $dll)) { Add-Type -OutputAssembly $dll -TypeDefinition ('" .. FG .. "' -replace 'QQ', [char]34) }",
         "Add-Type -Path $dll",
         "$o = New-Object System.Windows.Forms.Form",
         "$o.TopMost = $true; $o.ShowInTaskbar = $false; $o.StartPosition = 'Manual'",
         "$o.Location = New-Object System.Drawing.Point(-32000, -32000); $o.Size = New-Object System.Drawing.Size(1, 1)",
         "$o.Show(); [GomLikeFg]::Take($o.Handle, [IntPtr][int64]" .. hwnd .. "); $o.Activate()",
-        "$d = New-Object System.Windows.Forms.OpenFileDialog",
-        "$d.Multiselect = $true",
-        "$d.Title = 'Открыть файл'",
-        "$d.Filter = 'Видео и аудио|" .. pat .. "|Все файлы|*.*'",
-        "$d.InitialDirectory = '" .. dir:gsub("'", "''") .. "'",
-        "if ($d.ShowDialog($o) -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileNames }",
+        dialog,
         "[GomLikeFg]::Back([IntPtr][int64]" .. hwnd .. "); $o.Close()",
     }, '\n')
     mp.command_native_async({
-        name = 'subprocess', playback_only = false, capture_stdout = true,
+        name = 'subprocess', playback_only = false, capture_stdout = true, capture_stderr = true, stdin_data = stdin,
         args = {'powershell', '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-Command', ps},
     }, function(ok, res)
         dialog_busy = false
-        if not ok or not res or not res.stdout then return end
-        local first = true
-        for line in res.stdout:gmatch('[^\r\n]+') do
-            cmd('loadfile', line, append and 'append-play' or (first and 'replace' or 'append'))
-            first = false
+        if res and res.stderr and res.stderr ~= '' then mp.msg.warn('dialog: ' .. res.stderr) end
+        local paths = {}
+        if ok and res and res.stdout then
+            for line in res.stdout:gmatch('[^\r\n]+') do paths[#paths + 1] = line end
+        end
+        if #paths > 0 then done(paths) end
+    end)
+end
+
+-- append: добавить выбранные файлы в конец плейлиста (кнопка «Добавить» в плейлисте)
+local function open_dialog(append)
+    if not is_windows then cmd('script-binding', 'uosc/open-file'); return end
+    run_dialog(table.concat({
+        "$d = New-Object System.Windows.Forms.OpenFileDialog",
+        "$d.Multiselect = $true",
+        "$d.Title = 'Открыть файл'",
+        "$d.Filter = 'Видео, аудио и плейлисты|" .. patterns(EXTS .. ';' .. PLAYLIST_EXTS) ..
+            "|Плейлисты|" .. patterns(PLAYLIST_EXTS) .. "|Все файлы|*.*'",
+        "$d.InitialDirectory = " .. ps_quote(current_dir()),
+        "if ($d.ShowDialog($o) -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileNames }",
+    }, '\n'), function(paths)
+        for i, p in ipairs(paths) do
+            cmd('loadfile', p, append and 'append-play' or (i == 1 and 'replace' or 'append'))
         end
     end)
 end
@@ -424,6 +446,10 @@ local function draw_playlist(a)
     pbtn('plb-down', 'arrow_downward', sel ~= nil and sel < n)
     pbtn('plb-sort', 'sort_by_alpha', n > 1)
     pbtn('plb-clear', 'clear_all', n > 1)
+    -- справа: открыть и сохранить плейлист
+    bx = x2 - 10 * s - 2 * bs - 4 * s
+    pbtn('plb-load', 'file_open', true)
+    pbtn('plb-save', 'save', n > 0)
 end
 
 -- ---------- панель изображения (F7) ----------
@@ -1224,6 +1250,72 @@ actions['plb-sort'] = function()
         {title = '&Перемешать', cmd = 'playlist-shuffle'},
     })
 end
+-- сохранить плейлист в .m3u8 (UTF-8, полные пути) через окно Windows «Сохранить как»;
+-- файл пишет PowerShell (содержимое приходит ему на stdin) — так пути с русскими буквами
+-- работают надёжно
+actions['plb-save'] = function()
+    local list = mp.get_property_native('playlist') or {}
+    if #list == 0 or not is_windows then return end
+    local lines = {'#EXTM3U'}
+    for _, e in ipairs(list) do
+        local p = e.filename or ''
+        if not p:find('://') then p = (mp.command_native({'normalize-path', p}) or p):gsub('/', '\\') end
+        if e.title then lines[#lines + 1] = '#EXTINF:-1,' .. e.title end
+        lines[#lines + 1] = p
+    end
+    local dir = current_dir()
+    local name = (dir ~= '' and basename(dir) or 'Плейлист') .. '.m3u8'
+    run_dialog(table.concat({
+        "$data = [Console]::In.ReadToEnd()",
+        "$d = New-Object System.Windows.Forms.SaveFileDialog",
+        "$d.Title = 'Сохранить плейлист'",
+        "$d.Filter = 'Плейлист M3U8|*.m3u8|Плейлист M3U|*.m3u'",
+        "$d.DefaultExt = 'm3u8'; $d.AddExtension = $true; $d.OverwritePrompt = $true",
+        "$d.FileName = " .. ps_quote(name),
+        "$d.InitialDirectory = " .. ps_quote(dir),
+        "if ($d.ShowDialog($o) -eq [System.Windows.Forms.DialogResult]::OK) {",
+        "    [IO.File]::WriteAllText($d.FileName, $data, (New-Object Text.UTF8Encoding $false)); $d.FileName }",
+    }, '\n'), function(paths)
+        mp.osd_message('Плейлист сохранён: ' .. basename(paths[1]))
+    end, table.concat(lines, '\r\n') .. '\r\n')
+end
+
+-- открыть сохранённый плейлист (m3u, m3u8, pls) вместо текущего
+actions['plb-load'] = function()
+    if not is_windows then return end
+    run_dialog(table.concat({
+        "$d = New-Object System.Windows.Forms.OpenFileDialog",
+        "$d.Title = 'Открыть плейлист'",
+        "$d.Filter = 'Плейлисты|" .. patterns(PLAYLIST_EXTS) .. "|Все файлы|*.*'",
+        "$d.InitialDirectory = " .. ps_quote(current_dir()),
+        "if ($d.ShowDialog($o) -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileName }",
+    }, '\n'), function(paths) cmd('loadlist', paths[1], 'replace') end)
+end
+
+-- файл плейлиста загружает только свой список: без этого autocreate-playlist=same добавил бы
+-- в плейлист ещё и другие файлы плейлистов из той же папки
+mp.add_hook('on_load', 50, function()
+    local low = (mp.get_property('path') or ''):lower()
+    if low:match('%.m3u8?$') or low:match('%.pls$') then
+        mp.set_property('file-local-options/autocreate-playlist', 'no')
+    end
+end)
+
+-- открыли файл плейлиста (двойным кликом в Проводнике, через «Открыть» или кнопкой) —
+-- показываем панель плейлиста
+local last_playlist_file
+mp.register_event('file-loaded', function()
+    local pos = mp.get_property_number('playlist-pos', 0)
+    local src = mp.get_property('playlist/' .. pos .. '/playlist-path') or ''
+    local low = src:lower()
+    if (low:match('%.m3u8?$') or low:match('%.pls$')) and src ~= last_playlist_file then
+        last_playlist_file = src
+        if not st.pl_open then toggle_playlist() end
+    end
+end)
+
+tips['plb-load'] = 'Открыть плейлист (m3u, m3u8, pls)'
+tips['plb-save'] = 'Сохранить плейлист'
 tips['plb-add'] = 'Добавить файлы'
 tips['plb-del'] = 'Убрать выделенное из плейлиста (Delete)'
 tips['plb-up'] = 'Переместить вверх'
