@@ -51,8 +51,8 @@
 
 Собираются два установщика:
 
-- `installer/GomLike-Setup.exe` (2 МБ) — скачивает mpv во время установки;
-- `installer/GomLike-Setup-Offline.exe` (около 38 МБ) — mpv уже внутри, интернет не нужен. mpv для него скачивается при первой сборке в `installer/mpv` и дальше берётся оттуда; свежий — с ключом `-UpdateMpv` (`--update-mpv` в build.sh).
+- `installer/GomLike-Setup.exe` (0,5 МБ) — скачивает mpv во время установки;
+- `installer/GomLike-Setup-Offline.exe` (около 36 МБ) — mpv уже внутри, интернет не нужен. mpv для него скачивается при первой сборке в `installer/mpv` и дальше берётся оттуда; свежий — с ключом `-UpdateMpv` (`--update-mpv` в build.sh).
 
 Windows:
 
