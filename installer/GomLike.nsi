@@ -163,6 +163,9 @@ Section "${APP} (обязательно)" SecMain
     SetOutPath "$INSTDIR"
     File "gomlike.ico"
     File /r "payload\portable_config"
+    ; при обновлении: ziggy из uosc больше не ставим (антивирусы помечают его, а нам он не нужен)
+    Delete "$INSTDIR\portable_config\scripts\uosc\bin\ziggy-windows.exe"
+    RMDir "$INSTDIR\portable_config\scripts\uosc\bin"
     File "payload\README.txt"
     ; лицензии: GomLike (MIT) и mpv (GPLv2+); откуда взят mpv — в mpv-source.txt
     File "/oname=LICENSE.txt" "payload\LICENSE"
