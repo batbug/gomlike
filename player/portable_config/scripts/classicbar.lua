@@ -304,6 +304,48 @@ mp.register_event('playback-restart', function()
     end
 end)
 
+-- ---------- повтор A-B ----------
+-- Точки хранит mpv (ab-loop-a, ab-loop-b); кусок крутится, только когда стоят обе.
+-- Клавиши: [ точка A, ] точка B, \ снять; кнопка A-B на панели и l проходят эти шаги по очереди
+local function ab_point(name) return tonumber(mp.get_property(name)) end
+local function ab_store(name, t) mp.set_property(name, string.format('%.3f', t)) end
+
+local function ab_set_a()
+    local pos = mp.get_property_number('time-pos')
+    if not pos then return end
+    local b = ab_point('ab-loop-b')
+    if b and pos >= b then mp.set_property('ab-loop-b', 'no') end
+    ab_store('ab-loop-a', pos)
+    mp.osd_message('Точка A: ' .. fmt_time(pos))
+end
+
+local function ab_set_b()
+    local pos = mp.get_property_number('time-pos')
+    if not pos then return end
+    -- без точки A кусок начинается с начала файла; B раньше A — меняем местами
+    local a = ab_point('ab-loop-a') or 0
+    if a > pos then a, pos = pos, a end
+    ab_store('ab-loop-a', a)
+    ab_store('ab-loop-b', pos)
+    mp.osd_message('Повтор A-B: ' .. fmt_time(a) .. ' – ' .. fmt_time(pos))
+end
+
+local function ab_clear()
+    mp.set_property('ab-loop-a', 'no')
+    mp.set_property('ab-loop-b', 'no')
+    mp.osd_message('Повтор A-B выключен')
+end
+
+actions.ab = function()
+    if not ab_point('ab-loop-a') then ab_set_a()
+    elseif not ab_point('ab-loop-b') then ab_set_b()
+    else ab_clear() end
+end
+mp.register_script_message('ab-a', ab_set_a)
+mp.register_script_message('ab-b', ab_set_b)
+mp.register_script_message('ab-clear', ab_clear)
+mp.register_script_message('ab-cycle', actions.ab)
+
 mp.register_script_message('view-reset', function()
     view_reset()
     mp.osd_message('Масштаб: 100%')
@@ -637,9 +679,17 @@ local function render()
             local b = math.min(st.cache / dur, 1)
             rrect(a, sx1, sy - 3 * s, sx1 + (sx2 - sx1) * b, sy + 3 * s, 3 * s, C.buffered)
         end
+        local function bar_x(t) return sx1 + (sx2 - sx1) * math.max(0, math.min(t / dur, 1)) end
+        -- кусок повтора A-B: полоса шире дорожки, чтобы её было видно и поверх просмотренного
+        if st.ab_a and st.ab_b then
+            rect(a, bar_x(st.ab_a), sy - 5 * s, bar_x(st.ab_b), sy + 5 * s, C.accent_dark, '40')
+        end
         local p = math.max(0, math.min((st.pos or 0) / dur, 1))
         local px = sx1 + (sx2 - sx1) * p
         if px > sx1 + 1 then rrect(a, sx1, sy - 3 * s, px, sy + 3 * s, 3 * s, C.accent) end
+        for _, t in ipairs({st.ab_a or false, st.ab_b or false}) do
+            if t then rect(a, bar_x(t) - 1 * s, sy - 8 * s, bar_x(t) + 1 * s, sy + 8 * s, C.accent) end
+        end
         local over_seek = st.hovered == 'seek' or st.dragging == 'seek'
         circle(a, px, sy, (over_seek and 7 or 5.5) * s, C.icon_hi)
     end
@@ -678,6 +728,7 @@ local function render()
     local time_w = text_w(time_str, ts) + 20 * s
     local sp = math.abs(st.speed - 1) > 0.001 and string.format('%.2gx', st.speed)
     local spw = sp and text_w(sp, 14 * s) + 12 * s or 0
+    local abw = 40 * s -- ширина кнопки повтора A-B
 
     -- что помещается: в узком окне по очереди прячем меню/плейлист/изображение (вместе
     -- с временем), ползунок громкости, субтитры и дорожку, потом стоп/назад/вперёд/открыть;
@@ -692,7 +743,7 @@ local function render()
     local show
     for _, t in ipairs(tiers) do
         show = t
-        local need = x + (t.left and 4 * bs or 0) -- левая часть
+        local need = x + (t.left and 4 * bs + abw or 0) -- левая часть
             + 10 * s + bs + (t.vol and 132 * s or 4 * s) + bs + 14 * s -- полный экран, громкость, звук
             + (t.tracks and 2 * bs or 0) + (t.extra and 3 * bs + time_w or 0) + spw + 8 * s
         if need <= w then break end
@@ -703,6 +754,13 @@ local function render()
         x = button('prev', x, 'skip_previous')
         x = button('next', x, 'skip_next')
         x = button('open', x, 'folder_open', 20)
+        -- кнопка повтора A-B: «A-» — стоит только начало, оранжевая — точки поставлены
+        local hov = st.hovered == 'ab'
+        if hov then rrect(a, x, cy - bs / 2, x + abw, cy + bs / 2, 4 * s, C.hover) end
+        text(a, x + abw / 2, cy, (st.ab_a and not st.ab_b) and 'A-' or 'A-B', 14 * s,
+            st.ab_a and C.accent or (hov and C.icon_hi or C.icon), 5)
+        elements[#elements + 1] = {id = 'ab', x1 = x, y1 = cy - bs / 2, x2 = x + abw, y2 = cy + bs / 2}
+        x = x + abw
     end
     local left_end = x
 
@@ -753,6 +811,9 @@ local function render()
     draw_playlist(a)
 
     -- подсказки: над панелью управления или над кнопкой панели изображения
+    tips.ab = not st.ab_a and 'Повтор A-B: поставить точку A ([)'
+        or not st.ab_b and 'Повтор A-B: поставить точку B (])'
+        or esc('Снять повтор A-B (\\)')
     local tip, tx, ty2
     local thumb_at
     if (st.hovered == 'seek' or st.dragging == 'seek') and dur > 0 and seek_area then
@@ -1140,6 +1201,8 @@ for _, e in ipairs(EQ) do
 end
 watch('video-rotate', 'rotate', function(v) st.rotate = tonumber(v) or 0 end)
 watch('video-zoom', 'zoom')
+watch('ab-loop-a', nil, function(v) st.ab_a = tonumber(v) end)
+watch('ab-loop-b', nil, function(v) st.ab_b = tonumber(v) end)
 watch('glsl-shaders', nil, function(v)
     st.hflip, st.vflip = false, false
     for _, p in ipairs(v or {}) do
