@@ -1090,6 +1090,10 @@ local function dock_playlist(open)
     local hwnd = window_handle()
     if open then
         st.dock = nil
+        -- без файла окно не расширяем (пустое широкое окно выглядит странно): плейлист
+        -- открывается внутри окна, а расширится окно, когда откроется видео (ниже, dock_wait)
+        st.dock_wait = st.idle or nil
+        if st.dock_wait then return end
         if hwnd and not st.fs and win32.user32.IsZoomed(hwnd) == 0 then
             local grow = math.floor(380 * st.scale + 0.5)
             local r, mi = win32.ffi.new('GL_RECT'), win32.ffi.new('GL_MONITORINFO')
@@ -1116,11 +1120,19 @@ local function dock_playlist(open)
         if st.dock and hwnd and not st.fs and win32.user32.IsZoomed(hwnd) == 0 then
             window_adjust(hwnd, -st.dock.shift, -st.dock.grow)
         end
-        st.dock = nil
+        st.dock, st.dock_wait = nil, nil
         for k, v in pairs(saved_opts or {}) do mp.set_property(k, v) end
         saved_opts = nil
     end
 end
+
+-- плейлист открыли без файла, теперь файл открылся: mpv подгоняет окно под видео,
+-- и уже после этого окно расширяется под плейлист
+local function dock_later()
+    if st.pl_open and st.dock_wait and not st.idle then dock_playlist(true) end
+end
+mp.register_event('video-reconfig', function() mp.add_timeout(0.3, dock_later) end)
+mp.register_event('file-loaded', function() mp.add_timeout(1, dock_later) end)
 
 local function toggle_playlist()
     st.pl_open = not st.pl_open
