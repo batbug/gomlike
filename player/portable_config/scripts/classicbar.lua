@@ -685,9 +685,28 @@ local function render()
     elements, seek_area, vol_area = {}, nil, nil
 
     if st.idle then
-        icon(a, w / 2, h / 2 - 40 * s, 'folder_open', 64 * s, C.accent)
-        text(a, w / 2, h / 2 + 20 * s, 'Дважды щёлкни, чтобы открыть файл, или перетащи его сюда', 20 * s, C.dim, 5)
-        elements[#elements + 1] = {id = 'open', x1 = w / 2 - 60 * s, y1 = h / 2 - 80 * s, x2 = w / 2 + 60 * s, y2 = h / 2}
+        -- по центру места под видео: между заголовком и панелью, левее открытого плейлиста
+        local ax2 = st.pl_open and w - pl_width() or w
+        local ay1 = st.fs and 0 or topbar_h()
+        local ay2 = panel_shown() and h - o.height * s or h
+        local cx, cy = ax2 / 2, (ay1 + ay2) / 2
+        -- надпись в одну строку, если не влезает — в две, и ещё мельче, если и так тесно
+        local room = ax2 - 40 * s
+        local lines = {'Дважды щёлкни, чтобы открыть файл, или перетащи его сюда'}
+        local fsz = 20 * s
+        if text_w(lines[1], fsz) > room then
+            lines = {'Дважды щёлкни, чтобы открыть файл,', 'или перетащи его сюда'}
+            local need = text_w(lines[1], fsz)
+            if need > room then fsz = math.max(11 * s, fsz * room / need) end
+        end
+        local lh = fsz * 1.35
+        local block = 64 * s + 16 * s + #lines * lh
+        local iy = cy - block / 2 + 32 * s
+        icon(a, cx, iy, 'folder_open', 64 * s, C.accent)
+        for i, l in ipairs(lines) do
+            text(a, cx, iy + 32 * s + 16 * s + (i - 0.5) * lh, l, fsz, C.dim, 5)
+        end
+        elements[#elements + 1] = {id = 'open', x1 = cx - 60 * s, y1 = iy - 40 * s, x2 = cx + 60 * s, y2 = iy + 40 * s}
     end
 
     if not panel_shown() then
