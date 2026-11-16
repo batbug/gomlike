@@ -1488,4 +1488,25 @@ mp.add_key_binding(nil, 'dblclick', function()
     if st.idle then open_dialog() else cmd('cycle', 'fullscreen') end
 end)
 
+-- ---------- громкость между запусками ----------
+-- Как в GOM: громкость одна на все файлы и сохраняется при выходе. Пишем её в
+-- portable_config/volume.conf (через секунду после изменения и при выходе), а mpv.conf
+-- подключает этот файл при запуске (include), так что громкость ставит сам mpv
+local volume_file = mp.command_native({'expand-path', '~~/volume.conf'})
+local saved_volume = math.floor(mp.get_property_number('volume', 100) + 0.5)
+local function save_volume()
+    local v = math.floor(mp.get_property_number('volume', saved_volume) + 0.5)
+    if v == saved_volume then return end
+    if write_file(volume_file, '# громкость с прошлого раза, её сохраняет плеер\nvolume=' .. v .. '\n') then
+        saved_volume = v
+    end
+end
+local volume_timer = mp.add_timeout(1, save_volume)
+volume_timer:kill()
+mp.observe_property('volume', 'number', function()
+    volume_timer:kill()
+    volume_timer:resume()
+end)
+mp.register_event('shutdown', save_volume)
+
 mp.add_periodic_timer(1 / 30, function() if dirty then render() end end)

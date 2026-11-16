@@ -163,6 +163,12 @@ Section "${APP} (обязательно)" SecMain
     SetOutPath "$INSTDIR"
     File "gomlike.ico"
     File /r "payload\portable_config"
+    ; громкость с прошлого раза: файл пишет сам плеер, при обновлении его не трогаем
+    ${IfNot} ${FileExists} "$INSTDIR\portable_config\volume.conf"
+        FileOpen $1 "$INSTDIR\portable_config\volume.conf" w
+        FileWrite $1 "volume=100$\r$\n"
+        FileClose $1
+    ${EndIf}
     ; при обновлении: ziggy из uosc больше не ставим (антивирусы помечают его, а нам он не нужен)
     Delete "$INSTDIR\portable_config\scripts\uosc\bin\ziggy-windows.exe"
     RMDir "$INSTDIR\portable_config\scripts\uosc\bin"
