@@ -13,6 +13,7 @@ local o = {
     remaining_time = false,   -- показывать оставшееся время вместо общего
     icon_font = 'MaterialIconsRound-Regular',
     ontop = 'never',          -- поверх всех окон: never, always, playing (сюда пишет remember.conf)
+    pl_width = 380,           -- ширина плейлиста при масштабе 100% (её тоже пишет remember.conf)
 }
 options.read_options(o, 'classicbar')
 
@@ -37,6 +38,7 @@ local ov = mp.create_osd_overlay('ass-events')
 ov.z = -1
 local dirty = true
 local hide_timer
+local save_state -- запомнить громкость, булавку и ширину плейлиста (в конце файла)
 
 -- ---------- рисование ----------
 local function f(n) return string.format('%.1f', n) end
@@ -361,8 +363,15 @@ actions.eqreset = image_reset
 -- ---------- раскладка и отрисовка ----------
 local function panel_shown() return not st.fs or st.visible end
 
--- плейлист — панель справа рядом с видео (видео отодвигается, а не закрывается)
-local function pl_width() return math.floor(math.min(380 * st.scale, st.w * 0.45) + 0.5) end
+-- плейлист — панель справа рядом с видео (видео отодвигается, а не закрывается).
+-- Ширину меняют, перетаскивая его левый край; слева всегда остаётся место для видео
+local PL_MIN = 220
+st.pl_wb = math.max(PL_MIN, tonumber(o.pl_width) or 380) -- ширина при масштабе 100%
+local function pl_width()
+    local s = st.scale
+    local wmax = math.max(PL_MIN * s, st.w - 200 * s)
+    return math.floor(math.min(st.pl_wb * s, wmax) + 0.5)
+end
 
 -- верхняя полоса: в окне это заголовок (всегда виден, заголовок Windows выключен в mpv.conf),
 -- в полноэкранном режиме появляется, когда мышь у верхнего края
@@ -404,7 +413,7 @@ local function update_margin()
 end
 
 -- ---------- плейлист ----------
-local pl_box
+local pl_box, pl_split
 local function basename(p) return p:gsub('[\\/]+$', ''):match('[^\\/]+$') or p end
 local function strip_ext(n) return n:match('^(.+)%.[^.]+$') or n end
 local function esc(str) return (str:gsub('\\', '\\\226\129\160'):gsub('{', '\\{'):gsub('[\r\n]', ' ')) end
@@ -417,7 +426,7 @@ local function fit(str, width, size)
 end
 
 local function draw_playlist(a)
-    pl_box = nil
+    pl_box, pl_split = nil, nil
     if not st.pl_open then return end
     local w, h, s = st.w, st.h, st.scale
     local list = st.playlist or {}
@@ -427,7 +436,11 @@ local function draw_playlist(a)
     local y2 = panel_shown() and panel_top or h
     pl_box = {x1 = x1, y1 = y1, x2 = x2, y2 = y2}
     rect(a, x1, y1, x2, y2, C.panel)
-    rect(a, x1, y1, x1 + 1 * s, y2, C.sep)
+    -- левый край тянется мышью (ширина плейлиста); под мышью он подсвечивается
+    local split_on = st.hovered == 'plsplit' or st.dragging == 'plsplit'
+    rect(a, x1 - (split_on and 1 or 0) * s, y1, x1 + (split_on and 2 or 1) * s, y2, split_on and C.accent or C.sep)
+    pl_split = {id = 'plsplit', x1 = x1 - 5 * s, y1 = y1, x2 = x1 + 4 * s, y2 = y2}
+    elements[#elements + 1] = pl_split
 
     local hh = 38 * s
     text(a, x1 + 14 * s, y1 + hh / 2, 'Плейлист', 15 * s, C.text, 4)
@@ -953,6 +966,7 @@ local function on_left(t)
         if id == 'seek' then st.dragging = 'seek'; seek_to(st.mx, false)
         elseif id == 'vol' then st.dragging = 'vol'; vol_to(st.mx)
         elseif id and id:find('^eq:') then st.dragging = id; eq_to(id, st.mx)
+        elseif id == 'plsplit' then st.dragging = 'plsplit'
         else
             st.pressed = id
             -- строку плейлиста можно потащить: перетаскивание начнётся, когда мышь сдвинется
@@ -961,6 +975,11 @@ local function on_left(t)
         dirty = true
     elseif t.event == 'up' then
         if st.dragging == 'seek' then seek_to(st.mx, true) end
+        if st.dragging == 'plsplit' then
+            -- запоминаем ширину такой, какой её видно (с учётом ограничения по окну)
+            st.pl_wb = math.max(PL_MIN, math.floor(pl_width() / st.scale + 0.5))
+            save_state()
+        end
         if st.dragging == 'pl' then
             -- playlist-move ставит запись на место записи с номером gap (считая с 0)
             local from, gap = st.pl_from, st.pl_gap
@@ -993,7 +1012,7 @@ end
 
 local function over_ui(x, y)
     if st.idle and hit(x, y) == 'open' then return true end
-    if st.pl_open and in_box(pl_box, x, y) then return true end
+    if st.pl_open and (in_box(pl_box, x, y) or in_box(pl_split, x, y)) then return true end
     if st.eq_open and in_box(eq_box, x, y) then return true end
     if st.fs and st.top and y <= topbar_h() then return true end
     -- заголовок в окне: только кнопки, за остальное окно таскается (window-dragging)
@@ -1095,7 +1114,7 @@ local function dock_playlist(open)
         st.dock_wait = st.idle or nil
         if st.dock_wait then return end
         if hwnd and not st.fs and win32.user32.IsZoomed(hwnd) == 0 then
-            local grow = math.floor(380 * st.scale + 0.5)
+            local grow = math.floor(st.pl_wb * st.scale + 0.5)
             local r, mi = win32.ffi.new('GL_RECT'), win32.ffi.new('GL_MONITORINFO')
             mi.cbSize = win32.ffi.sizeof(mi)
             if win32.user32.GetWindowRect(hwnd, r) ~= 0
@@ -1118,7 +1137,9 @@ local function dock_playlist(open)
         for k in pairs(saved_opts) do mp.set_property(k, 'no') end
     else
         if st.dock and hwnd and not st.fs and win32.user32.IsZoomed(hwnd) == 0 then
-            window_adjust(hwnd, -st.dock.shift, -st.dock.grow)
+            -- ширину плейлиста могли поменять, пока он был открыт: окно сужается на ту,
+            -- что сейчас (в пикселях окна — как и расширялось)
+            window_adjust(hwnd, -st.dock.shift, -pl_width())
         end
         st.dock, st.dock_wait = nil, nil
         for k, v in pairs(saved_opts or {}) do mp.set_property(k, v) end
@@ -1215,6 +1236,10 @@ mp.observe_property('mouse-pos', 'native', function(_, m)
     if moved then show_panel() end
     if st.dragging == 'seek' then seek_to(st.mx, false)
     elseif st.dragging == 'vol' then vol_to(st.mx)
+    elseif st.dragging == 'plsplit' then
+        local wb = (st.w - st.mx) / st.scale
+        st.pl_wb = math.max(PL_MIN, math.min(wb, (st.w / st.scale) - 200))
+        dirty = true
     elseif st.dragging and st.dragging:find('^eq:') then eq_to(st.dragging, st.mx) end
     -- перетаскивание строки плейлиста
     if not st.dragging and st.pressed and st.pressed:find('^pl:') and st.pl_press_y
@@ -1590,18 +1615,20 @@ mp.observe_property('pause', 'bool', apply_ontop)
 mp.observe_property('idle-active', 'bool', apply_ontop)
 
 -- ---------- что плеер помнит между запусками ----------
--- Как в GOM: громкость одна на все файлы, режим «поверх всех окон» тоже общий. Пишем их в
--- portable_config/remember.conf (через секунду после изменения громкости, сразу после
--- смены режима и при выходе), а mpv.conf подключает этот файл при запуске (include):
--- громкость ставит сам mpv, режим приходит в script-opts (classicbar-ontop)
+-- Как в GOM: громкость одна на все файлы, режим «поверх всех окон» и ширина плейлиста
+-- тоже общие. Пишем их в portable_config/remember.conf (через секунду после изменения
+-- громкости, сразу после смены режима или ширины и при выходе), а mpv.conf подключает
+-- этот файл при запуске (include): громкость ставит сам mpv, остальное приходит
+-- в script-opts (classicbar-ontop, classicbar-pl_width)
 local remember_file = mp.command_native({'expand-path', '~~/remember.conf'})
 local function remember_text()
-    return '# этот файл пишет плеер: громкость и «поверх всех окон» с прошлого раза\n' ..
+    return '# этот файл пишет плеер: громкость, «поверх всех окон» и ширина плейлиста с прошлого раза\n' ..
         'volume=' .. math.floor(mp.get_property_number('volume', 100) + 0.5) .. '\n' ..
-        'script-opts-append=classicbar-ontop=' .. st.ontop .. '\n'
+        'script-opts-append=classicbar-ontop=' .. st.ontop .. '\n' ..
+        'script-opts-append=classicbar-pl_width=' .. math.floor(st.pl_wb + 0.5) .. '\n'
 end
 local saved_text = remember_text()
-local function save_state()
+save_state = function()
     local t = remember_text()
     if t ~= saved_text and write_file(remember_file, t) then saved_text = t end
 end
