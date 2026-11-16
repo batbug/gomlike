@@ -163,9 +163,15 @@ Section "${APP} (обязательно)" SecMain
     SetOutPath "$INSTDIR"
     File "gomlike.ico"
     File /r "payload\portable_config"
-    ; громкость с прошлого раза: файл пишет сам плеер, при обновлении его не трогаем
-    ${IfNot} ${FileExists} "$INSTDIR\portable_config\volume.conf"
-        FileOpen $1 "$INSTDIR\portable_config\volume.conf" w
+    ; громкость и «поверх всех окон» с прошлого раза: файл пишет сам плеер, при обновлении
+    ; его не трогаем; в версии 1.7 он назывался volume.conf (там только громкость)
+    ${IfNot} ${FileExists} "$INSTDIR\portable_config\remember.conf"
+    ${AndIf} ${FileExists} "$INSTDIR\portable_config\volume.conf"
+        Rename "$INSTDIR\portable_config\volume.conf" "$INSTDIR\portable_config\remember.conf"
+    ${EndIf}
+    Delete "$INSTDIR\portable_config\volume.conf"
+    ${IfNot} ${FileExists} "$INSTDIR\portable_config\remember.conf"
+        FileOpen $1 "$INSTDIR\portable_config\remember.conf" w
         FileWrite $1 "volume=100$\r$\n"
         FileClose $1
     ${EndIf}

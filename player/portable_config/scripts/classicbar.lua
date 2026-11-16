@@ -12,6 +12,7 @@ local o = {
     hide_timeout = 1.5,       -- через сколько секунд прятать панель в полноэкранном режиме
     remaining_time = false,   -- показывать оставшееся время вместо общего
     icon_font = 'MaterialIconsRound-Regular',
+    ontop = 'never',          -- поверх всех окон: never, always, playing (сюда пишет remember.conf)
 }
 options.read_options(o, 'classicbar')
 
@@ -363,13 +364,28 @@ local function panel_shown() return not st.fs or st.visible end
 -- плейлист — панель справа рядом с видео (видео отодвигается, а не закрывается)
 local function pl_width() return math.floor(math.min(380 * st.scale, st.w * 0.45) + 0.5) end
 
+-- верхняя полоса: в окне это заголовок (всегда виден, заголовок Windows выключен в mpv.conf),
+-- в полноэкранном режиме появляется, когда мышь у верхнего края
+local function topbar_h() return (st.fs and 36 or 30) * st.scale end
+local function topbar_shown() return not st.fs or st.top end
+
 local base_sub_margin = mp.get_property_number('sub-margin-y', 22)
+local base_osd_margin = mp.get_property_number('osd-margin-y', 22)
 local function update_margin()
-    local m = 0
-    if not st.fs and st.h > 0 then m = math.floor(o.height * st.scale + 0.5) / st.h end
+    local m, mt = 0, 0
+    if not st.fs and st.h > 0 then
+        m = math.floor(o.height * st.scale + 0.5) / st.h
+        mt = math.floor(topbar_h() + 0.5) / st.h
+    end
     if math.abs(m - st.margin) > 1e-6 then
         st.margin = m
         mp.set_property_number('video-margin-ratio-bottom', m)
+    end
+    if math.abs(mt - (st.margin_t or -1)) > 1e-6 then
+        st.margin_t = mt
+        mp.set_property_number('video-margin-ratio-top', mt)
+        -- надписи mpv (громкость, перемотка) — под заголовком, а не на нём
+        mp.set_property_number('osd-margin-y', base_osd_margin + math.floor(mt * 720 + 0.5))
     end
     local mr = (st.pl_open and st.w > 0) and pl_width() / st.w or 0
     if math.abs(mr - (st.margin_r or 0)) > 1e-6 then
@@ -406,7 +422,7 @@ local function draw_playlist(a)
     local w, h, s = st.w, st.h, st.scale
     local list = st.playlist or {}
     local n = #list
-    local x2, y1 = w, 0
+    local x2, y1 = w, st.fs and 0 or topbar_h()
     local x1 = w - pl_width()
     local y2 = panel_shown() and panel_top or h
     pl_box = {x1 = x1, y1 = y1, x2 = x2, y2 = y2}
@@ -602,42 +618,62 @@ local function show_thumb(at)
     end
 end
 
--- ---------- верхняя полоса в полноэкранном режиме (как в GOM) ----------
--- появляется, когда мышь у верхнего края: название и кнопки окна
-local function topbar_h() return 36 * st.scale end
-
+-- ---------- заголовок окна (как в GOM) ----------
+-- Название и кнопки: поверх всех окон (булавка), свернуть, развернуть, закрыть.
+-- За пустое место заголовка окно таскается мышью, двойной клик разворачивает его.
+-- В полноэкранном режиме та же полоса появляется у верхнего края, с кнопкой выхода из него
 actions['tb-fs'] = function() mp.set_property_bool('fullscreen', false) end
 actions['tb-min'] = function() mp.set_property_bool('window-minimized', true) end
 actions['tb-max'] = function()
-    mp.set_property_bool('fullscreen', false)
-    mp.set_property_bool('window-maximized', true)
+    if st.fs then
+        mp.set_property_bool('fullscreen', false)
+        mp.set_property_bool('window-maximized', true)
+    else
+        cmd('cycle', 'window-maximized')
+    end
 end
 actions['tb-close'] = function() cmd('quit') end
 tips['tb-fs'] = 'Выйти из полноэкранного режима (Esc)'
 tips['tb-min'] = 'Свернуть'
-tips['tb-max'] = 'Развернуть в окно'
 tips['tb-close'] = 'Закрыть'
 
+local ONTOP_NAMES = {never = 'никогда', always = 'всегда', playing = 'во время воспроизведения'}
+
 local function draw_topbar(a)
-    if not (st.fs and st.top) then return end
+    if not topbar_shown() then return end
     local s, w = st.scale, st.w
-    local th, bw = topbar_h(), 46 * s
+    local th, bw = topbar_h(), (st.fs and 46 or 42) * s
     rect(a, 0, 0, w, th, C.panel)
-    local bx = w - 4 * bw
-    local function tbtn(id, name, size, hover_col)
+    local n = st.fs and 5 or 4
+    local bx = w - n * bw
+    local function tbtn(id, name, size, col, hover_col)
         local hov = st.hovered == id
         if hov then rect(a, bx, 0, bx + bw, th, hover_col or C.hover) end
-        icon(a, bx + bw / 2, th / 2, name, size * s, hov and C.icon_hi or C.icon)
+        icon(a, bx + bw / 2, th / 2, name, size * s, col or (hov and C.icon_hi or C.icon))
         elements[#elements + 1] = {id = id, x1 = bx, y1 = 0, x2 = bx + bw, y2 = th}
         bx = bx + bw
     end
-    tbtn('tb-fs', 'fullscreen_exit', 20)
+    -- булавка: серая — не поверх, оранжевая — всегда поверх, оранжевая с ▶ — во время воспроизведения
+    local pin_x = bx
+    tbtn('tb-pin', 'push_pin', 17, st.ontop ~= 'never' and C.accent or nil)
+    if st.ontop == 'playing' then
+        icon(a, pin_x + bw / 2 + 8 * s, th / 2 + 6 * s, 'play_arrow', 13 * s, C.accent)
+    end
+    tips['tb-pin'] = 'Поверх всех окон: ' .. ONTOP_NAMES[st.ontop] .. ' (Ctrl+T)'
+    if st.fs then tbtn('tb-fs', 'fullscreen_exit', 20) end
     tbtn('tb-min', 'remove', 18)
-    tbtn('tb-max', 'crop_square', 16)
-    tbtn('tb-close', 'close', 20, bgr('E81123'))
-    -- как в заголовке окна (title в mpv.conf): «Фильм.avi - GomLike»
+    tbtn('tb-max', (st.maxed and not st.fs) and 'filter_none' or 'crop_square', (st.maxed and not st.fs) and 14 or 16)
+    tips['tb-max'] = st.fs and 'Развернуть в окно' or (st.maxed and 'Свернуть в окно' or 'Развернуть')
+    tbtn('tb-close', 'close', 20, nil, bgr('E81123'))
+    -- как в заголовке Windows (title в mpv.conf): «Фильм.avi - GomLike»
     local title = (st.title and st.title ~= '' and st.title .. ' - ' or '') .. 'GomLike'
-    text(a, 14 * s, th / 2, esc(fit(title, w - 4 * bw - 28 * s, 13 * s)), 13 * s, C.text, 4)
+    local fs_ = (st.fs and 13 or 12.5) * s
+    text(a, 12 * s, th / 2, esc(fit(title, w - n * bw - 24 * s, fs_)), fs_, C.text, 4)
+end
+
+-- над заголовком в окне, но не над его кнопками: там окно таскается мышью
+local function on_title(x, y)
+    return not st.fs and st.inside and y >= 0 and y <= topbar_h()
 end
 
 local function render()
@@ -809,6 +845,14 @@ local function render()
     draw_topbar(a)
     draw_eq(a)
     draw_playlist(a)
+    -- у окна нет рамки Windows: тонкая граница, чтобы его край был виден на тёмном фоне
+    if not st.fs and not st.maxed then
+        local b = math.max(1, math.floor(s + 0.5))
+        rect(a, 0, 0, w, b, C.sep)
+        rect(a, 0, h - b, w, h, C.sep)
+        rect(a, 0, 0, b, h, C.sep)
+        rect(a, w - b, 0, w, h, C.sep)
+    end
 
     -- подсказки: над панелью управления или над кнопкой панели изображения
     tips.ab = not st.ab_a and 'Повтор A-B: поставить точку A ([)'
@@ -933,6 +977,11 @@ local function over_ui(x, y)
     if st.pl_open and in_box(pl_box, x, y) then return true end
     if st.eq_open and in_box(eq_box, x, y) then return true end
     if st.fs and st.top and y <= topbar_h() then return true end
+    -- заголовок в окне: только кнопки, за остальное окно таскается (window-dragging)
+    if not st.fs and y <= topbar_h() then
+        local id = hit(x, y)
+        return id ~= nil and id:find('^tb%-') ~= nil
+    end
     return panel_shown() and y >= panel_top - 2
 end
 
@@ -1192,6 +1241,7 @@ watch('osd-dimensions', nil, function(v)
 end)
 watch('user-data/uosc/menu/type', 'menu')
 watch('media-title', 'title')
+watch('window-maximized', 'maxed')
 watch('playlist', 'playlist', function(v)
     st.playlist = v or {}
     if st.pl_sel and st.pl_sel > #st.playlist then st.pl_sel = #st.playlist > 0 and #st.playlist or nil end
@@ -1456,7 +1506,9 @@ end
 mp.add_key_binding(nil, 'context-menu', function(t)
     if t.event == 'up' or t.event == 'press' then
         local row = st.pl_open and st.hovered and tonumber(st.hovered:match('^pl:(%d+)$') or st.hovered:match('^pldel:(%d+)$'))
-        if row then show_row_menu(row) else show_full_menu() end
+        if row then show_row_menu(row)
+        elseif st.hovered == 'tb-pin' then actions.ontop_menu()
+        else show_full_menu() end
     end
 end, {complex = true})
 actions.menu = show_full_menu
@@ -1474,7 +1526,7 @@ local click_timer, last_dbl = nil, 0
 local function dbl_time() return (mp.get_property_number('input-doubleclick-time', 300) + 50) / 1000 end
 
 mp.add_key_binding(nil, 'click', function()
-    if st.idle or mp.get_time() - last_dbl < dbl_time() then return end
+    if st.idle or on_title(st.mx, st.my) or mp.get_time() - last_dbl < dbl_time() then return end
     if click_timer then click_timer:kill() end
     click_timer = mp.add_timeout(dbl_time(), function()
         click_timer = nil
@@ -1485,28 +1537,74 @@ end)
 mp.add_key_binding(nil, 'dblclick', function()
     last_dbl = mp.get_time()
     if click_timer then click_timer:kill(); click_timer = nil end
-    if st.idle then open_dialog() else cmd('cycle', 'fullscreen') end
+    -- двойной клик по заголовку, как в Windows: развернуть окно или вернуть как было
+    if on_title(st.mx, st.my) then cmd('cycle', 'window-maximized')
+    elseif st.idle then open_dialog() else cmd('cycle', 'fullscreen') end
 end)
 
--- ---------- громкость между запусками ----------
--- Как в GOM: громкость одна на все файлы и сохраняется при выходе. Пишем её в
--- portable_config/volume.conf (через секунду после изменения и при выходе), а mpv.conf
--- подключает этот файл при запуске (include), так что громкость ставит сам mpv
-local volume_file = mp.command_native({'expand-path', '~~/volume.conf'})
-local saved_volume = math.floor(mp.get_property_number('volume', 100) + 0.5)
-local function save_volume()
-    local v = math.floor(mp.get_property_number('volume', saved_volume) + 0.5)
-    if v == saved_volume then return end
-    if write_file(volume_file, '# громкость с прошлого раза, её сохраняет плеер\nvolume=' .. v .. '\n') then
-        saved_volume = v
-    end
+-- ---------- поверх всех окон ----------
+-- Три режима, как в GOM: никогда, всегда, во время воспроизведения (на паузе, в конце
+-- файла и без файла окно не поверх). Переключает булавка в заголовке и Ctrl+T,
+-- правый клик по булавке и меню «Окно» дают выбрать режим
+local ONTOP_NEXT = {never = 'always', always = 'playing', playing = 'never'}
+st.ontop = ONTOP_NAMES[o.ontop] and o.ontop or 'never'
+mp.set_property('user-data/classicbar/ontop', st.ontop) -- для галочек в menu.conf
+
+local function apply_ontop()
+    local want = st.ontop == 'always' or (st.ontop == 'playing'
+        and not mp.get_property_bool('pause', false) and not mp.get_property_bool('idle-active', true))
+    if mp.get_property_bool('ontop', false) ~= want then mp.set_property_bool('ontop', want) end
 end
-local volume_timer = mp.add_timeout(1, save_volume)
+mp.observe_property('pause', 'bool', apply_ontop)
+mp.observe_property('idle-active', 'bool', apply_ontop)
+
+-- ---------- что плеер помнит между запусками ----------
+-- Как в GOM: громкость одна на все файлы, режим «поверх всех окон» тоже общий. Пишем их в
+-- portable_config/remember.conf (через секунду после изменения громкости, сразу после
+-- смены режима и при выходе), а mpv.conf подключает этот файл при запуске (include):
+-- громкость ставит сам mpv, режим приходит в script-opts (classicbar-ontop)
+local remember_file = mp.command_native({'expand-path', '~~/remember.conf'})
+local function remember_text()
+    return '# этот файл пишет плеер: громкость и «поверх всех окон» с прошлого раза\n' ..
+        'volume=' .. math.floor(mp.get_property_number('volume', 100) + 0.5) .. '\n' ..
+        'script-opts-append=classicbar-ontop=' .. st.ontop .. '\n'
+end
+local saved_text = remember_text()
+local function save_state()
+    local t = remember_text()
+    if t ~= saved_text and write_file(remember_file, t) then saved_text = t end
+end
+local volume_timer = mp.add_timeout(1, save_state)
 volume_timer:kill()
 mp.observe_property('volume', 'number', function()
     volume_timer:kill()
     volume_timer:resume()
 end)
-mp.register_event('shutdown', save_volume)
+mp.register_event('shutdown', save_state)
+
+local function set_ontop(mode)
+    if not ONTOP_NAMES[mode] then return end
+    st.ontop = mode
+    mp.set_property('user-data/classicbar/ontop', mode)
+    apply_ontop()
+    save_state()
+    mp.osd_message('Поверх всех окон: ' .. ONTOP_NAMES[mode])
+    dirty = true
+end
+mp.register_script_message('ontop', function(mode)
+    set_ontop(mode == 'cycle' and ONTOP_NEXT[st.ontop] or mode)
+end)
+actions['tb-pin'] = function() set_ontop(ONTOP_NEXT[st.ontop]) end
+actions.ontop_menu = function()
+    local function item(title, mode)
+        return {title = title, cmd = 'script-message-to classicbar ontop ' .. mode,
+            state = st.ontop == mode and {'checked'} or {}}
+    end
+    show_menu_items({
+        item('&Никогда', 'never'),
+        item('&Всегда', 'always'),
+        item('Во время &воспроизведения', 'playing'),
+    })
+end
 
 mp.add_periodic_timer(1 / 30, function() if dirty then render() end end)
